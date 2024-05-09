@@ -12,12 +12,35 @@ Currently the team behind CoastSeg Planet is researching how to co-register Plan
 
 ## Data Requirements
 - `4-band multispectral Analytic Ortho Scene` from Planet
-- Recommend users to clip to AOI to limit file size
+   - According to [Planet's asset types](https://developers.planet.com/docs/data/psscene/#available-asset-types) this asset is "Radiometrically-calibrated analytic image stored as 16-bit scaled radiance."
+   - These radiance values need to be converted to TOA using a TOA conversion function
+
 
 ## Co-Registeration
 - CoastSeg downloads LandSat as TOA imagery from the tier 1 TOA collection which saves all the landsat values as 32 bit floats instead of unsigned 16 bit ints
 - CoastSeg-planet includes a script to convert 32bit float TOA imagery into unsigned 16 bit imagery that can be co-registered with the [arosics](https://git.gfz-potsdam.de/danschef/arosics) `COREG`` function
-  
+
+
+## Planet Downloads VS CoastSeg Downloads
+### LandSat 8
+- Both Planet & CoastSeg can download L8 but download it from different collections
+- CoastSeg downloads imagery from the  tier 1 TOA collection
+   - All the landsat values are saved as 32 bit floats 
+   - These images CANNOT be co-registered using the [arosics](https://git.gfz-potsdam.de/danschef/arosics) `COREG`` function until they are converted to `unit16`
+- Planet downloads imagery from the tier 1  collection
+   - All the landsat values are saved as unsigned 16 bit ints
+   - Planet by default downloads each band separately so users will need to combine these bands together
+   - 
+
 
 # Installation
 
+CoastSeg Planet is under active development so the dependencies are subjuct to change
+
+```
+conda create --name coastseg_planet python=3.10 -y
+conda activate coastseg_planet
+conda install -c conda-forge coastseg geowombat arosics -y
+pip install tensorflow
+pip install transformers
+```
