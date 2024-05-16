@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "coastseg_planet"
+dynamic = ["readme"]
+version = "0.1" 
+authors = [
+  { name=" Sharon Fitzpatrick", email="sharon.fitzpatrick23@gmail.com" },
+]
+keywords = [
+    "coastseg_planet",
+    "coastseg-planet",
+    "coastseg",
+    "coastsat",
+]
+# find` directive with `include` or `exclude`
+description = "An interactive python package for satellite derived shoreline workflows using Planet imagery."
+dependencies = []
+# dependencies = [
+#   "h5py>=3.10.0",
+#   "aiohttp",
+#   "chardet",
+#   "dask",
+#   "doodleverse-utils>=0.0.35",
+#   "geojson",
+#   "geopandas",
+#   "jupyterlab>=3.0.0",
+#   "xarray",
+#   "arosics",
+#   # "geowombat", # geowombat does not have a pip package
+#   ]
+license = { file="LICENSE" }
+requires-python = ">=3.10"
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: GIS",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+
+# tells setup tools to include the code in the coastseg directory within the src directory
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+[project.urls]
+homepage = "https://github.com/2320sharon/CoastSeg-Planet"
+repository = "https://github.com/2320sharon/CoastSeg-Planet"
+"Bug Tracker" = "https://github.com/2320sharon/CoastSeg-Planet/issues"
