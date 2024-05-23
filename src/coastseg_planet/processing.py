@@ -14,6 +14,44 @@ import os
 from arosics import COREG_LOCAL, DESHIFTER, COREG
 from xml.dom import minidom
 import datetime
+from typing import List, Optional, Union
+import geopandas as gpd
+
+import shapely.geometry as geometry
+
+def create_geometry(
+    geomtype: str, shoreline: List[List[float]]
+) -> Optional[Union[geometry.LineString, geometry.MultiPoint]]:
+    """
+    Creates geometry based on geomtype and shoreline data.
+
+    Parameters:
+    -----------
+    geomtype: str
+        Type of geometry ('lines' or 'points').
+    shoreline: List[List[float]]
+        List of shoreline coordinates.
+        Ex: [[0,1],[1,0]]
+
+    Returns:
+    --------
+    Union[geometry.LineString, geometry.MultiPoint, None]
+        The created geometry or None if invalid.
+    """
+    if geomtype == "lines" and len(shoreline) >= 2:
+        return geometry.LineString(shoreline)
+    elif geomtype == "points" and len(shoreline) > 0:
+        return geometry.MultiPoint([(coord[0], coord[1]) for coord in shoreline])
+    return None
+
+def create_gdf_from_shoreline(shoreline: List[np.ndarray], output_epsg: int,geomtype:str = "lines"):
+    """geomtype can be lines or points"""
+    geom = create_geometry(geomtype, shoreline)
+    if geom:
+        # Creating a GeoDataFrame directly with all attributes
+        shoreline_gdf = gpd.GeoDataFrame( geometry=[geom],crs=f"EPSG:{output_epsg}")
+        return shoreline_gdf
+    return None
 
 def get_date_from_path(filename):
     # Original string

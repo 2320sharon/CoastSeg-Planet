@@ -4,7 +4,7 @@ from typing import List
 from shapely.geometry import LineString
 
 from coastseg_planet.plotting import create_overlay, create_legend, plot_image_with_legend, save_detection_figure, create_class_color_mapping
-from coastseg_planet.processing import read_planet_tiff, get_georef, get_epsg_from_tiff
+from coastseg_planet.processing import read_planet_tiff, get_georef, get_epsg_from_tiff, create_gdf_from_shoreline
 from coastsat import SDS_tools
 
 from coastseg.extracted_shoreline import load_image_labels, load_merged_image_labels, remove_small_objects_and_binarize, get_indices_of_classnames, get_class_mapping
@@ -75,6 +75,11 @@ def get_shorelines_from_model(planet_cloud_mask_path:str,planet_path:str,model_c
     print(f"image_epsg: {image_epsg} type: {type(image_epsg)}")
     georef = get_georef(planet_path)
     shoreline = process_shoreline(contours,planet_cloud_mask,  georef, image_epsg, settings)
+    # save the shoreline to a geojson file
+    shoreline_gdf = create_gdf_from_shoreline(shoreline,settings["output_epsg"],"lines")
+    shoreline_gdf.to_crs(epsg=4326, inplace=True)
+    shoreline_gdf.to_file(f"extracted_shoreline_{date}.geojson", driver="GeoJSON")
+
     print(f"class_mapping: {class_mapping}")
     shoreline_detection_figures(
         planet_RGB,
