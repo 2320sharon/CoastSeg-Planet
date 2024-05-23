@@ -78,7 +78,8 @@ def get_shorelines_from_model(planet_cloud_mask_path:str,planet_path:str,model_c
     # save the shoreline to a geojson file
     shoreline_gdf = create_gdf_from_shoreline(shoreline,settings["output_epsg"],"lines")
     shoreline_gdf.to_crs(epsg=4326, inplace=True)
-    shoreline_gdf.to_file(f"extracted_shoreline_{date}.geojson", driver="GeoJSON")
+    shoreline_geojson_path = os.path.join(save_path,f"extracted_shoreline_{date}.geojson")
+    shoreline_gdf.to_file(shoreline_geojson_path, driver="GeoJSON")
 
     print(f"class_mapping: {class_mapping}")
     shoreline_detection_figures(
