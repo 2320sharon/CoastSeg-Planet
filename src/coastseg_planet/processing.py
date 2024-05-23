@@ -1,5 +1,276 @@
 import rasterio
+import concurrent.futures
+import rasterio
 import numpy as np
+from osgeo import gdal, osr
+import os
+import rasterio
+import numpy as np
+import skimage.morphology as morphology
+from shutil import copyfile
+import os
+
+#from shapely.geometry import box
+from arosics import COREG_LOCAL, DESHIFTER, COREG
+from xml.dom import minidom
+import datetime
+
+def get_date_from_path(filename):
+    # Original string
+    '_'.join(filename.split('_')[:2])
+
+    # Convert to datetime object
+    dt = datetime.datetime.strptime('_'.join(filename.split('_')[:2]), "%Y%m%d_%H%M%S")
+
+    return dt.strftime("%Y-%m-%d-%H-%M-%S")
+
+def get_epsg_from_tiff(tiff_path):
+    """
+    Retrieves the EPSG code from a TIFF file.
+
+    Args:
+        tiff_path (str): The path to the TIFF file.
+
+    Returns:
+        None
+
+    Prints the EPSG code if found, or "No EPSG found" if not.
+    """
+    data = gdal.Open(tiff_path, gdal.GA_ReadOnly)
+    projection = data.GetProjection()
+    srs = osr.SpatialReference(wkt=projection)
+    if srs.IsProjected:
+        print(srs.GetAuthorityCode(None))
+        return srs.GetAuthorityCode(None)
+    else:
+        print("No EPSG found")
+        return None
+
+# function from coastsat_plantscope
+def TOA_conversion( image_path, xml_path, save_path):
+    ''' 
+    1) Convert DN values to Top of Atmosphere (TOA)
+    2) Add sensor type (PS2, PS2.SD, PSB.SD) to save filename
+    
+    Function modified from:
+        https://github.com/planetlabs/notebooks/blob/master/jupyter-notebooks/toar/toar_planetscope.ipynb 
+
+    '''
+    
+    # Load image bands - note all PlanetScope 4-band images have band order BGRN
+    with rasterio.open(image_path) as src:
+        band_blue_radiance = src.read(1)
+        
+    with rasterio.open(image_path) as src:
+        band_green_radiance = src.read(2)
+    
+    with rasterio.open(image_path) as src:
+        band_red_radiance = src.read(3)
+    
+    with rasterio.open(image_path) as src:
+        band_nir_radiance = src.read(4)
+    
+    
+    ### Get TOA Factor ###
+    xmldoc = minidom.parse(xml_path)
+    nodes = xmldoc.getElementsByTagName("ps:bandSpecificMetadata")
+    
+    # XML parser refers to bands by numbers 1-4
+    coeffs = {}
+    for node in nodes:
+        bn = node.getElementsByTagName("ps:bandNumber")[0].firstChild.data
+        if bn in ['1', '2', '3', '4']:
+            i = int(bn)
+            value = node.getElementsByTagName("ps:reflectanceCoefficient")[0].firstChild.data
+            coeffs[i] = float(value)
+    
+    #print("Conversion coefficients: {}".format(coeffs))  
+    
+    
+    ### Convert to TOA ###
+    
+    # Multiply the Digital Number (DN) values in each band by the TOA reflectance coefficients
+    band_blue_reflectance = band_blue_radiance * coeffs[1]
+    band_green_reflectance = band_green_radiance * coeffs[2]
+    band_red_reflectance = band_red_radiance * coeffs[3]
+    band_nir_reflectance = band_nir_radiance * coeffs[4]
+    
+    #print("Red band radiance is from {} to {}".format(np.amin(band_red_radiance), np.amax(band_red_radiance)))
+    #print("Red band reflectance is from {} to {}".format(np.amin(band_red_reflectance), np.amax(band_red_reflectance)))
+    
+
+    # find sensor name
+    node = xmldoc.getElementsByTagName("eop:Instrument")
+    sensor = node[0].getElementsByTagName("eop:shortName")[0].firstChild.data
+    
+    print("Sensor: {}".format(sensor))
+    
+    save_path += '_TOA.tif'
+    ### Save output images ###
+    
+    # Set spatial characteristics of the output object to mirror the input
+    kwargs = src.meta
+    kwargs.update(
+        dtype=rasterio.uint16,
+        count = 4)
+    
+    #print("Before Scaling, red band reflectance is from {} to {}".format(np.amin(band_red_reflectance), np.amax(band_red_reflectance)))
+    # Here we include a fixed scaling factor. This is common practice.
+    scale = 10000
+    blue_ref_scaled = scale * band_blue_reflectance
+    green_ref_scaled = scale * band_green_reflectance
+    red_ref_scaled = scale * band_red_reflectance
+    nir_ref_scaled = scale * band_nir_reflectance
+    
+    #print("After Scaling, red band reflectance is from {} to {}".format(np.amin(red_ref_scaled), np.amax(red_ref_scaled)))
+    print(f"Saving to: {os.path.abspath(save_path)}")
+    # Write band calculations to a new raster file
+    with rasterio.open(save_path, 'w', **kwargs) as dst:
+            dst.write_band(1, blue_ref_scaled.astype(rasterio.uint16))
+            dst.write_band(2, green_ref_scaled.astype(rasterio.uint16))
+            dst.write_band(3, red_ref_scaled.astype(rasterio.uint16))
+            dst.write_band(4, nir_ref_scaled.astype(rasterio.uint16))
+    
+
+def get_base_filename(tiff_path, separator='_3B'):
+    if separator not in os.path.basename(tiff_path):
+        raise ValueError(f"Separator '{separator}' not found in '{tiff_path}'")
+    return os.path.basename(tiff_path).split(separator, 1)[0]
+
+def calculate_area_from_bounds(bounds):
+    """
+    Calculate the area from the bounding box.
+    
+    Args:
+    - bounds (BoundingBox): The bounding box.
+    
+    Returns:
+    - float: The area of the bounding box in square meters.
+    """
+    return (bounds.right - bounds.left) * (bounds.top - bounds.bottom)
+
+def square_meters_to_square_kilometers(area_sq_meters):
+    """
+    Convert area from square meters to square kilometers.
+
+    Args:
+    - area_sq_meters (float): Area in square meters.
+
+    Returns:
+    - float: Area in square kilometers.
+    """
+    return area_sq_meters / 1_000_000
+
+def square_kilometers_to_square_meters(area_sq_kilometers):
+    """
+    Convert area from square kilometers to square meters.
+
+    Args:
+    - area_sq_kilometers (float): Area in square kilometers.
+
+    Returns:
+    - float: Area in square meters.
+    """
+    return area_sq_kilometers * 1_000_000
+
+def check_tiff_area(tiff_path, expected_area_km, threshold=0.8):
+    """
+    Check if the TIFF file area (using bounds) is above a certain threshold of the expected area.
+
+    Args:
+    - tiff_path (str): Path to the TIFF file.
+    - expected_area_km (float): Expected area in square kilometers.
+    - threshold (float): The threshold percentage (default is 0.8 for 80%).
+
+    Returns:
+    - tuple: (tiff_path, bool, float) Path to the TIFF file, whether the area is above the threshold, and the area of the TIFF file in square kilometers.
+    """
+    with rasterio.open(tiff_path) as src:
+        tiff_bounds = src.bounds
+
+    tiff_area_m = calculate_area_from_bounds(tiff_bounds)
+    tiff_area_km = square_meters_to_square_kilometers(tiff_area_m)
+    expected_area_m = square_kilometers_to_square_meters(expected_area_km)
+
+    is_above_threshold = tiff_area_m >= (expected_area_m * threshold)
+
+    return tiff_path, is_above_threshold, tiff_area_km
+
+
+def filter_tiffs_by_area(tiff_paths, expected_area_km, threshold=0.8, use_threads=True):
+    """
+    Filters a list of TIFF file paths based on their area.
+
+    Args:
+        tiff_paths (list): A list of file paths to TIFF files.
+        expected_area_km (float): The expected area in square kilometers.
+        threshold (float, optional): The threshold value for determining if a TIFF file's area is above the expected area. Defaults to 0.8.
+        use_threads (bool, optional): Specifies whether to use threads for parallel execution. Defaults to True.
+
+    Returns:
+        list: A list of filtered TIFF file paths that have an area above the expected area.
+    """
+    if use_threads:
+        executor_class = concurrent.futures.ThreadPoolExecutor
+    else:
+        executor_class = concurrent.futures.ProcessPoolExecutor
+
+    filtered_tiffs = []
+
+    with executor_class() as executor:
+        future_to_tiff = {executor.submit(check_tiff_area, tiff_path, expected_area_km, threshold): tiff_path for tiff_path in tiff_paths}
+
+        for future in concurrent.futures.as_completed(future_to_tiff):
+            tiff_path, is_above_threshold, tiff_area_km = future.result()
+            if is_above_threshold:
+                filtered_tiffs.append(tiff_path)
+
+    return filtered_tiffs
+
+def filter_tiffs_by_area_no_threads(tiff_paths, expected_area_km, threshold=0.8):
+    filtered_tiffs = []
+
+    for tiff_path in tiff_paths:
+        tiff_path, is_above_threshold, tiff_area_km = check_tiff_area( tiff_path, expected_area_km, threshold)
+
+        if is_above_threshold:
+            filtered_tiffs.append(tiff_path)
+
+    return filtered_tiffs
+
+def read_planet_tiff(planet_path:str, num_bands: list)->np.ndarray:
+    """
+    Read a Planet TIFF image and return it as a numpy array.
+
+    Args:
+        planet_path (str): The file path to the Planet TIFF image.
+        num_bands (list): A list of band indices to read from the image.
+
+    Returns:
+        numpy.ndarray: The image data as a numpy array with shape (rows, cols, bands).
+    """
+    # read in the planet image as an RGB image
+    with rasterio.open(planet_path) as src:
+        im_ms = src.read(num_bands)
+        # reorder the numpy array from (bands, rows, cols) to (rows, cols, bands)
+        im_ms = np.moveaxis(im_ms, 0, -1)
+        return im_ms
+
+def get_georef(fn):
+    """
+    Retrieves the georeferencing information from a given file.
+
+    Parameters:
+    fn (str): The file path of the input file.
+
+    Returns:
+    numpy.ndarray: An array containing the georeferencing information.
+
+    """
+    data = gdal.Open(fn, gdal.GA_ReadOnly)
+    georef = np.array(data.GetGeoTransform())
+    return georef
+
 
 
 def create_tiled_raster(src_filepath, dst_filepath, block_size=256):
