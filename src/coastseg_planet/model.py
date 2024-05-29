@@ -44,7 +44,7 @@ CLASS_LABEL_COLORMAPS = [
     ]
 
 
-def apply_model_to_image(input_image:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD:bool=False):
+def apply_model_to_image(input_image:str, save_path:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD:bool=False):
     """
     Applies a trained model to an input image for segmentation.
     
@@ -52,6 +52,7 @@ def apply_model_to_image(input_image:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD
 
     Args:
         input_image (str): The path to the input image file.
+        save_path (str): The path to the directory where the output image will be saved.
         TESTTIMEAUG (bool, optional): Whether to apply test-time augmentation. Defaults to False.
         OTSU_THRESHOLD (bool, optional): Whether to use Otsu thresholding. Defaults to False.
 
@@ -62,7 +63,7 @@ def apply_model_to_image(input_image:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD
     # check the range of the image to be sure it is between 0 and 255
     
     # directory to save outputs to temporarily hard coded for now
-    sample_direc = r'C:\development\coastseg-planet\CoastSeg-Planet\output_zoo'
+    # sample_direc = r'C:\development\coastseg-planet\CoastSeg-Planet\output_zoo'
     # hard code this for now.... segformer only
     weights_directory = r'C:\development\doodleverse\coastseg\CoastSeg\src\coastseg\downloaded_models\segformer_RGB_4class_8190958'
     # get the model weights needed to initialize the model
@@ -80,7 +81,7 @@ def apply_model_to_image(input_image:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD
         model_list,
         metadata_dict,
         model_types[0],
-        sample_direc=sample_direc,
+        sample_direc=save_path,
         NCLASSES=config.get('NCLASSES'),
         N_DATA_BANDS=config.get('N_DATA_BANDS'),
         TARGET_SIZE=config.get('TARGET_SIZE'),

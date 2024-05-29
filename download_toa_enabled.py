@@ -27,8 +27,8 @@ import os
 
 # read the api key from the config file
 config = configparser.ConfigParser()
-config.read('config.ini')
-
+# config.read(r"C:\development\coastseg-planet\CoastSeg-Planet\config.ini")
+config.read("config.ini")
 os.environ['API_KEY'] = config['DEFAULT']['API_KEY']
 
 auth = Auth.from_env('API_KEY')
@@ -42,7 +42,8 @@ auth.store()
 order_name = 'floris_roi_TOAR_disabled'
 
 ## insert path to roi geojson
-roi_path = r"C:\development\coastseg-planet\single_roi.geojson"
+# roi_path = r"C:\development\coastseg-planet\single_roi.geojson"
+roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\boardwalk\roi.geojson"
 with open(roi_path, 'r') as file:
     roi = json.load(file)
 
@@ -175,6 +176,7 @@ async def main():
                                                      tools=[planet.order_request.clip_tool(aoi=roi),planet.order_request.toar_tool(scale_factor=10000)]
                                                      )
         
+        # optional coregister tool we can use to coregister the images
         # request = planet.order_request.build_request(name=order_name,
         #                                          products=[planet.order_request.product(item_ids=ids,
         #                                                                                 product_bundle='analytic_udm2',
