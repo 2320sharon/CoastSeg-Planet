@@ -416,11 +416,13 @@ def plot_overlay(segfile, bigimage, color_label, N_DATA_BANDS):
     Returns:
     None
     """
+    segfile = segfile.replace(".png", "_overlay.png")
     plt.imshow(bigimage, cmap='gray' if N_DATA_BANDS <= 3 else None)
     plt.imshow(color_label, alpha=0.5)
     plt.axis("off")
     plt.savefig(segfile, dpi=200, bbox_inches="tight")
     plt.close("all")
+    print(f"Overlay image saved to {segfile}")
 
 def plot_side_by_side_overlay(segfile, bigimage, color_label, N_DATA_BANDS):
     """
@@ -435,6 +437,7 @@ def plot_side_by_side_overlay(segfile, bigimage, color_label, N_DATA_BANDS):
     Returns:
     None
     """
+    segfile = segfile.replace(".png", "side_side_overlay.png")
     plt.subplot(121)
     plt.imshow(bigimage, cmap='gray' if N_DATA_BANDS <= 3 else None)
     plt.axis("off")
@@ -460,7 +463,7 @@ def plot_per_class_probabilities(segfile, bigimage, softmax_scores, N_DATA_BANDS
         None
     """
     for kclass in range(softmax_scores.shape[-1]):
-        tmpfile = segfile.replace("_overlay.png", "_overlay_"+str(kclass)+"prob.png")
+        tmpfile = segfile.replace(".png", "_overlay_"+str(kclass)+"prob.png")
         plt.imshow(bigimage, cmap='gray' if N_DATA_BANDS <= 3 else None)
         plt.imshow(softmax_scores[:,:,kclass], alpha=0.5, vmax=1, vmin=0)
         plt.axis("off")

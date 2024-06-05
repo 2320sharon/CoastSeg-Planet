@@ -13,11 +13,12 @@ from skimage.io import imsave, imread
 from skimage.transform import resize
 
 # Local application imports
-import doodleverse_utils
-from doodleverse_utils.prediction_imports import get_image, est_label_binary, est_label_multiclass, label_to_colors
+from coastseg_planet.processing import read_tiff
+from doodleverse_utils.prediction_imports import est_label_binary, est_label_multiclass, label_to_colors
 from doodleverse_utils.model_imports import dice_coef_loss
 from doodleverse_utils.model_imports import segformer
 from coastseg_planet.plotting import plot_overlay, plot_side_by_side_overlay, plot_per_class_probabilities
+from doodleverse_utils.imports import standardize, label_to_colors
 
 # GLOBAL VARIABLES
 CLASS_LABEL_COLORMAPS = [
@@ -43,6 +44,25 @@ CLASS_LABEL_COLORMAPS = [
         "#3399ff",
     ]
 
+def read_file_for_model(file_path:str)->np.ndarray:
+    """
+    Reads an image file and returns it as a NumPy array, s it can be read by the model.
+
+    Parameters:
+    file_path (str): The path to the image file.
+
+    Returns:
+    np.ndarray: The image data as a NumPy array.
+
+    Raises:
+    ValueError: If the file type is not supported.
+    """
+    if file_path.endswith(".tif"):
+        return read_tiff(file_path)
+    elif file_path.endswith(".jpg") or file_path.endswith(".png"):
+        return imread(file_path)
+    else:
+        raise ValueError(f"File type not supported: {file_path}")
 
 def apply_model_to_image(input_image:str, save_path:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD:bool=False):
     """
@@ -93,7 +113,6 @@ def apply_model_to_image(input_image:str, save_path:str, TESTTIMEAUG:bool=False,
 
 def seg_file2tensor_3band(f, TARGET_SIZE):  
     """
-    "seg_file2tensor(f)"
     This function reads a jpeg image from file into a cropped and resized tensor,
     for use in prediction with a trained segmentation model
     INPUTS:
@@ -118,6 +137,8 @@ def seg_file2tensor_3band(f, TARGET_SIZE):
     h = tf.shape(bigimage)[1]
 
     return smallimage, w, h, bigimage
+
+
 
 def get_metadatadict(
     weights_list: list, config_files: list, model_types: list
@@ -235,6 +256,76 @@ def get_weights_list(weights_directory, model_choice: str = "BEST") -> List[str]
         raise ValueError(
             f"Invalid model_choice: {model_choice}. Valid choices are 'ENSEMBLE' or 'BEST'."
         )
+
+
+def seg_file2tensor_ND(f, TARGET_SIZE):  
+    """
+    "seg_file2tensor(f)"
+    This function reads a NPZ image from file into a cropped and resized tensor,
+    for use in prediction with a trained segmentation model
+    INPUTS:
+        * f [string] file name of npz
+    OPTIONAL INPUTS: None
+    OUTPUTS:
+        * image [tensor array]: unstandardized image
+    GLOBAL INPUTS: TARGET_SIZE
+    """
+
+    with np.load(f) as data:
+        bigimage = data["arr_0"].astype("uint8")
+
+    smallimage = resize(
+        bigimage, (TARGET_SIZE[0], TARGET_SIZE[1]), preserve_range=True, clip=True
+    )
+    smallimage = np.array(smallimage)
+    smallimage = tf.cast(smallimage, tf.uint8)
+
+    w = tf.shape(bigimage)[0]
+    h = tf.shape(bigimage)[1]
+
+    return smallimage, w, h, bigimage
+
+# #-----------------------------------
+def get_image(file_path:str, N_DATA_BANDS:int, TARGET_SIZE:int, MODEL:str):
+    """
+    Retrieves an image and its associated information based on the number of data bands.
+
+    Args:
+        file_path (str): The file path of the image.
+        N_DATA_BANDS (int): The number of data bands in the image.
+        TARGET_SIZE (int): The target size of the image.
+        MODEL (str): The model type.
+
+    Returns:
+        tuple: A tuple containing the image, width, height, and big image.
+
+    Raises:
+        None
+    """
+    print(f"N_DATA_BANDS: {N_DATA_BANDS}")
+    if N_DATA_BANDS <= 3:
+        image, w, h, bigimage = seg_file2tensor_3band(file_path, TARGET_SIZE)
+    else:
+        image, w, h, bigimage = seg_file2tensor_ND(file_path, TARGET_SIZE)
+
+    try: #>3 bands
+        if N_DATA_BANDS<=3:
+            if image.shape[-1]>3:
+                image = image[:,:,:3]
+
+            if bigimage.shape[-1]>3:
+                bigimage = bigimage[:,:,:3]
+    except:
+        pass
+
+    image = standardize(image.numpy()).squeeze()
+
+    if MODEL=='segformer':
+        if np.ndim(image)==2:
+            image = np.dstack((image, image, image))
+        image = tf.transpose(image, (2, 0, 1))
+
+    return image, w, h, bigimage 
 
 def process_image(filename, N_DATA_BANDS, TARGET_SIZE, MODEL):
     """

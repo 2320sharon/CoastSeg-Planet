@@ -1,23 +1,361 @@
-import rasterio
-import concurrent.futures
-import rasterio
-import numpy as np
-from osgeo import gdal, osr
-import os
-import rasterio
-import numpy as np
-import skimage.morphology as morphology
+# Standard library imports
 from shutil import copyfile
+from typing import List, Optional, Union
+from xml.dom import minidom
+import concurrent.futures
+import datetime
+import glob
 import os
 
-#from shapely.geometry import box
-from arosics import COREG_LOCAL, DESHIFTER, COREG
-from xml.dom import minidom
-import datetime
-from typing import List, Optional, Union
+# Third party imports
+from arosics import COREG, COREG_LOCAL, DESHIFTER
+from osgeo import gdal, osr
+from skimage import img_as_ubyte
+from skimage.io import imsave
 import geopandas as gpd
-
+import numpy as np
+import rasterio
 import shapely.geometry as geometry
+import skimage.morphology as morphology
+
+
+def read_raster(raster):
+    with rasterio.open(raster) as src:
+        return src.read(1)
+
+def get_cloud_cover(filepath):
+    """
+    Calculate the cloud cover percentage for a given raster file.
+
+    Parameters:
+    filepath (str): The path to the raster file.
+
+    Returns:
+    tuple: A tuple containing the filepath and the cloud cover percentage.
+
+    """
+    mask = read_raster(filepath)
+    mask_area = mask.shape[0] * mask.shape[1]
+    cloud_mask = get_cloud_mask_landsat(mask)
+    mask_sum = np.sum(cloud_mask)
+    cloud_cover = np.round(mask_sum / mask_area,3)
+    return filepath, cloud_cover
+
+def get_cloud_mask_landsat(im_QA:np.ndarray)->np.ndarray[bool]:
+    """
+    Generate a cloud mask for Landsat imagery based on the QA band.
+    
+    This function specifically works for collection 2 Landsat data.
+    
+    Masks out cloud pixels indicated by the QA band values:
+        dilated cloud = bit 1
+        cirrus = bit 2
+        cloud = bit 3
+
+    This code was adapted from the code provided by the kvos in coastsat.
+    Args:
+        im_QA (np.ndarray): The QA band of the Landsat imagery.
+
+    Returns:
+        np.ndarray[bool]: A boolean array representing the cloud mask, where True indicates cloud pixels.
+
+    Notes:
+        - This function works for collection 2 Landsat data.
+        - The cloud mask is generated based on the QA band values.
+        - The function removes cloud pixels that form very thin features, which are often beach or swash pixels
+          erroneously identified as clouds by the CFMASK algorithm applied to the images by the USGS.
+    """
+    # function to return flag for n-th bit
+    def is_set(x, n):
+        return x & 1 << n != 0
+    # dilated cloud = bit 1
+    # cirrus = bit 2
+    # cloud = bit 3
+    qa_values = np.unique(im_QA.flatten())
+    cloud_values = []
+    for qaval in qa_values:
+        for k in [1, 2, 3]:  # check the first 3 flags
+            if is_set(qaval, k):
+                cloud_values.append(qaval)
+
+    # find which pixels have bits corresponding to cloud values
+    cloud_mask = np.isin(im_QA, cloud_values)
+
+    # remove cloud pixels that form very thin features. These are beach or swash pixels that are
+    # erroneously identified as clouds by the CFMASK algorithm applied to the images by the USGS.
+    if sum(sum(cloud_mask)) > 0 and sum(sum(~cloud_mask)) > 0:
+        cloud_mask = morphology.remove_small_objects(
+            cloud_mask, min_size=40, connectivity=1
+        )
+    return cloud_mask
+
+def read_acc_georef(filepath):
+    """
+    Read the acc_georef value from a file.
+
+    Parameters:
+    filepath (str): The path to the file.
+
+    Returns:
+    tuple: A tuple containing the filepath and the acc_georef value.
+
+    """
+    acc_georef = 12  # default value
+    with open(filepath, 'r') as file:
+        for line in file:
+            if line.startswith('acc_georef'):
+                acc_georef = float(line.split()[1])
+                break
+            
+    return filepath, acc_georef
+
+def get_date_acquired(filepath):
+    filename_txt = os.path.basename(filepath)
+    return filename_txt.split('_')[0]
+
+def get_files_with_cloud_cover(directory):
+    """
+    Finds the file with the lowest accuracy georeference in the given directory.
+
+    Args:
+        directory (str): The directory path where the files are located.
+
+    Returns:
+        str: The file path of the file with the lowest accuracy georeference.
+    """
+    files = [os.path.join(directory, file) for file in os.listdir(directory) if file.endswith('.tif')]
+    
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = executor.map(get_cloud_cover, files)
+    # return RMSE_files
+
+    cloud_covered_files = []
+    # create a dictionary with filename as key and acc_georef as value
+    for file, cloud_cover in results:
+        d= {'date_acquired':get_date_acquired(file), 'cloud_cover':cloud_cover}
+        # add the dictionary to the acc_georef_dict
+        cloud_covered_files.append(d)
+    return cloud_covered_files
+
+def find_file_with_lowest_acc_georef(directory):
+    """
+    Finds the file with the lowest accuracy georeference in the given directory.
+
+    Args:
+        directory (str): The directory path where the files are located.
+
+    Returns:
+        str: The file path of the file with the lowest accuracy georeference.
+    """
+    files = [os.path.join(directory, file) for file in os.listdir(directory) if file.endswith('.txt')]
+    print(len(files))
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = executor.map(read_acc_georef, files)
+
+    RMSE_files = []
+    # create a dictionary with filename as key and acc_georef as value
+    for file, acc_georef in results:
+        d= {'date_acquired':get_date_acquired(file), 'acc_georef':acc_georef}
+        # add the dictionary to the rmse_dict
+        RMSE_files.append(d)
+    return RMSE_files
+
+
+
+def get_best_file(files, acc_georef_weight=0.7, cloud_cover_weight=0.3, cloud_cover_threshold=0.05):
+    """
+    Returns the file with the lowest weighted combined acc_georef and cloud cover percentage.
+    Ranks files higher if their cloud cover is below a specified threshold.
+    
+    Parameters:
+        files (list of dict): A list where each dict contains 'filename', 'acc_georef', and 'cloud_cover'.
+        acc_georef_weight (float): Weight for the acc_georef score (default is 0.5).
+        cloud_cover_weight (float): Weight for the cloud cover score (default is 0.5).
+        cloud_cover_threshold (float): The cloud cover threshold to rank files higher (default is 20).
+    
+    Returns:
+        dict: The file with the best (lowest weighted combined) acc_georef and cloud cover percentage.
+    """
+    if not files:
+        return None
+    
+    # Normalize acc_georef and cloud cover to the same scale
+    max_acc_georef = max(file['acc_georef'] for file in files)
+    max_cloud_cover = max(file['cloud_cover'] for file in files)
+    
+    def score(file):
+        norm_acc_georef = file['acc_georef'] / max_acc_georef
+        norm_cloud_cover = file['cloud_cover'] / max_cloud_cover
+        combined_score = (norm_acc_georef * acc_georef_weight) + (norm_cloud_cover * cloud_cover_weight)
+        
+        # Adjust score to rank higher if cloud cover is below the threshold
+        if file['cloud_cover'] < cloud_cover_threshold:
+            combined_score *= 0.8  # Adjust this factor as needed to prioritize low cloud cover
+        
+        return combined_score
+    
+    best_file = min(files, key=score)
+    return best_file
+
+def get_best_landsat_from_dir(landsat_dir: str) -> str:
+    """
+    Get the best Landsat from the given directory.
+
+    Args:
+        landsat_dir (str): The directory to search for Landsat files.
+
+    Returns:
+        str: The best Landsat found in the directory.
+
+    Raises:
+        ValueError: If a valid Landsat is not found in the directory.
+    """
+    # Define the ranking of Landsat versions in terms of quality
+    landsat_ranking = {1: "L9", 2: "L8", 3: "L7", 4: "L5"}
+
+    # Search for the best Landsat in the directory
+    for landsat in landsat_ranking.values():
+        if landsat in os.listdir(landsat_dir):
+            # validate all the subdirectories are present
+            if all([os.path.exists(os.path.join(landsat_dir, landsat,subdir)) for subdir in ["meta", "ms", "mask"]]):
+                return landsat
+
+    # Raise an error if a valid Landsat is not found
+    raise ValueError(f"Could not find a valid Landsat in {landsat_dir}")
+
+def get_best_landsat_tifs(session_directory:str)->str:
+    """
+    Retrieves the paths of the best Landsat TIFF files based on the lowest accuracy georeference and lowest cloud cover.
+
+    Args:
+        session_directory (str): The directory path where the Landsat files are located.
+
+    Returns:
+        Tuple[str, str]: A tuple containing the paths of the best Landsat file and its corresponding cloud mask file.
+    """
+    landsat_dir=get_best_landsat_from_dir(session_directory)
+    # # the available directories in the landsat directory
+    meta_dir = os.path.join(session_directory,landsat_dir, "meta")
+    ms_dir = os.path.join(session_directory,landsat_dir, "ms")
+    mask_dir =  os.path.join(session_directory,landsat_dir, "mask")
+    
+    cloud_list= get_files_with_cloud_cover(mask_dir)
+    meta_list = find_file_with_lowest_acc_georef(meta_dir)
+
+    # join the matching dictionaries in both list
+    for cloud in cloud_list:
+        for meta in meta_list:
+            if cloud['date_acquired'] == meta['date_acquired']:
+                cloud.update(meta)
+                
+    # this would be the file with the lowest acc_georef and the lowest cloud cover
+    best_file_stats = get_best_file(cloud_list) # retuns a dictionary with the best file date_acquired, acc_georef and cloud_cover
+    best_file_regex = f'{best_file_stats["date_acquired"]}*.tif'
+    # get the best file
+    best_landsat_path = glob.glob(os.path.join(ms_dir, f'{best_file_regex}'))[0]
+    best_landsat_cloud_mask_path = glob.glob(os.path.join(mask_dir, f'{best_file_regex}'))[0]
+    return best_landsat_path, best_landsat_cloud_mask_path
+
+def read_tiff(input_path: str) -> np.ndarray:
+    """
+    Reads a TIFF image file and returns it as a NumPy array.
+
+    Parameters:
+        input_path (str): The path to the TIFF image file.
+
+    Returns:
+        np.ndarray: The image data as a NumPy array with shape (height, width, bands).
+    """
+    with rasterio.open(input_path) as src:
+        # reads the image in band, x, y format
+        img = src.read()
+        # change the format to x, y, band
+        img = np.moveaxis(img, 0, -1)
+        return img
+def read_tiff(input_path:str)->np.ndarray:
+    with rasterio.open(input_path)as src:
+        # reads the image in band,x,y format
+        img = src.read()
+        # change the format to x,y,band
+        img = np.moveaxis(img, 0, -1)
+        return img
+
+def convert_tiff_to_jpg(tiff_array: np.ndarray, filepath: str) -> None:
+    """
+    Convert a TIFF image array to a JPEG image and save it.
+
+    Args:
+        tiff_array (np.ndarray): The input TIFF image array.
+        filepath (str): The path of the input TIFF file.
+
+    Returns:
+        None
+    """
+    if tiff_array.shape[2] <3:
+        raise Exception("Image does not have 3 bands, cannot be saved as a jpg")
+    # Make a numpy array that can be saved as a jpg
+    im_RGB = tiff_array[:, :, 0:3]
+    im_RGB = img_as_ubyte(im_RGB)
+    fname = filepath.replace('.tif', '.jpg')
+    print(f"Saving image to {fname}")
+    imsave(fname, im_RGB, quality=100)
+
+def convert_landsat_to_model_format(input_file: str, output_file: str) -> None:
+    """Process the raster file by normalizing and reordering its bands, and save the output.
+    It removes the 5th band (SWIR2) and reorders the bands to RGBN (red, green, blue, NIR).
+    
+    This is used for 4 band planet imagery that needs to be reordered to RGBN from BGRN for the zoo model.
+
+    Args:
+        input_file (str): The file path to the input raster file.
+        output_file (str): The file path to save the processed raster file.
+    
+    Reads the input raster file, normalizes its bands to the range [0, 255],
+    reorders the bands to RGB followed by the remaining bands, and saves the
+    processed raster to the specified output file.
+
+    The function assumes the input raster has at least three bands (blue, green, red)
+    and possibly additional bands.
+
+    Prints the min and max values of the original and normalized red, green, and blue bands,
+    and the shape of the reordered bands array.
+    """
+    with rasterio.open(input_file) as src:
+        # Read the bands
+        band1 = src.read(1)  # red
+        band2 = src.read(2)  # green
+        band3 = src.read(3)  # blue
+        other_bands = [src.read(i) for i in range(4, src.count + 1)]
+
+        # Normalize the bands
+        band1_normalized = normalize_band(band1)
+        band2_normalized = normalize_band(band2)
+        band3_normalized = normalize_band(band3)
+        other_bands_normalized = [normalize_band(band) for band in other_bands]
+
+        # Reorder the bands RGB and other bands
+        # reordered_bands = np.dstack([band1_normalized, band2_normalized,band3_normalized,] + other_bands_normalized)
+        reordered_bands = np.dstack([band3_normalized,band2_normalized,band1_normalized, ] + other_bands_normalized)
+        # Get the metadata
+        meta = src.meta.copy()
+
+        print(f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}")
+        # Update the metadata to reflect the number of layers and data type
+        meta.update({
+            "count": reordered_bands.shape[2],
+            "dtype": reordered_bands.dtype,
+            "driver": 'GTiff'
+        })
+        #make a numpy array that can be saved as a jpg
+        convert_tiff_to_jpg(reordered_bands, input_file)
+
+        # Save the image
+        with rasterio.open(output_file, 'w', **meta) as dst:
+            for i in range(reordered_bands.shape[2]):
+                dst.write(reordered_bands[:, :, i], i + 1)
+                
+
+    return output_file
 
 def create_geometry(
     geomtype: str, shoreline: List[List[float]]
@@ -444,6 +782,7 @@ def convert_planet_to_model_format(input_file: str, output_file: str) -> None:
         # Get the metadata
         meta = src.meta.copy()
 
+        print(f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}")
         # Update the metadata to reflect the number of layers and data type
         meta.update({
             "count": reordered_bands.shape[2],
