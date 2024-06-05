@@ -53,7 +53,7 @@ def coregister_arosics_global(target_path:str, reference_path:str, output_path:s
     print(f"ssim_improved : {CR.ssim_improved}")
     CR.correct_shifts()
 
-def coregister_arosics_local(target_path:str, reference_path:str, output_path:str, target_cloud_mask:str,quiet_mode=False,num_cpus:int=1,**kwargs):
+def coregister_arosics_local(target_path:str, reference_path:str,reference_cloud_mask:str, output_path:str, target_cloud_mask:str,quiet_mode=False,num_cpus:int=1,**kwargs):
     "documentation at https://danschef.git-pages.gfz-potsdam.de/arosics/doc/arosics.html#module-arosics.CoReg_local"
 
     defaults = {
@@ -68,6 +68,9 @@ def coregister_arosics_local(target_path:str, reference_path:str, output_path:st
     'fmt_out':'GTIFF',
     'CPUs' : get_cpus(),
     }
+    
+    
+    
     # Update the defaults with the user-provided kwargs
     defaults.update(kwargs)
     print(defaults)
@@ -75,5 +78,6 @@ def coregister_arosics_local(target_path:str, reference_path:str, output_path:st
             target_path,
             path_out=output_path,
             mask_baddata_tgt = target_cloud_mask,
+            mask_baddata_ref = reference_cloud_mask,
             **defaults)
     CR.correct_shifts()

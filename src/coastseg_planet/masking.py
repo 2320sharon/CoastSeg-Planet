@@ -16,6 +16,7 @@ def apply_cloudmask_to_dir(input_dir):
     for file in os.listdir(input_dir):
         if file.endswith("3B_udm2_clip.tif"):
             udm_path = os.path.join(input_dir, file)
+            print(f"Processing {udm_path}")
             create_cloud_and_shadow_mask(udm_path)
             
 def load_udm(udm_filename):
@@ -55,15 +56,15 @@ def create_cloud_and_shadow_mask(udm_path):
         profile.update(dtype=rasterio.uint8, count=1)
         
         # write to a new file
-        mask_out = combined_mask > 0
+        # mask_out = combined_mask > 0
         
         base_filename = os.path.basename(udm_path.split('.')[-2])
         combined_path = os.path.join(os.path.dirname(udm_path), base_filename+'_combined_mask.tif')
-        combined_bool_path = os.path.join(os.path.dirname(udm_path), base_filename+'_combined_mask_bool.tif')
+        # combined_bool_path = os.path.join(os.path.dirname(udm_path), base_filename+'_combined_mask_bool.tif')
         
-        with rasterio.open(combined_bool_path, 'w', **profile) as dst:
-            print(f"Saving combined mask to {combined_bool_path}")
-            dst.write(mask_out.astype(rasterio.uint8), 1)
+        # with rasterio.open(combined_bool_path, 'w', **profile) as dst:
+        #     print(f"Saving combined mask to {combined_bool_path}")
+        #     dst.write(mask_out.astype(rasterio.uint8), 1)
         
         with rasterio.open(combined_path, 'w', **profile) as dst:
             print(f"Saving combined mask to {combined_path}")

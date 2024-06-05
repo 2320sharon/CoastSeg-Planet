@@ -18,6 +18,32 @@ import rasterio
 import shapely.geometry as geometry
 import skimage.morphology as morphology
 
+def format_landsat_tiff(landsat_path:str)->str:
+    """
+    Formats a Landsat TIFF file by converting it from float to uint16, changing the blocksize to 256x256,
+    creating a tiled raster, and converting it to a 3 band RGB ordered TIFF.
+
+    Args:
+        landsat_path (str): The file path of the Landsat TIFF file.
+
+    Returns:
+        str: The file path of the formatted Landsat TIFF file.
+    """
+    # Output file path
+    tmp_path = landsat_processed_path = landsat_path.replace("_ms.tif","_temp.tif")
+    landsat_processed_path = landsat_path.replace("_ms.tif","_processed.tif")
+    # convert the landsat from float to uint16 and change the blocksize to 256x256
+    tmp_path =convert_from_float_to_unit16(landsat_path, tmp_path)
+    # create a tiled raster of the landsat image
+    landsat_processed_path = create_tiled_raster(tmp_path,landsat_processed_path )
+    output_path = landsat_processed_path.replace('.tif','_model_format.tif')
+    # convert the landsat to a 3 band RGB ordered tiff
+    convert_landsat_to_model_format(landsat_processed_path,output_path)
+    if os.path.exists(tmp_path):
+        os.remove(tmp_path)
+    if os.path.exists(landsat_processed_path):
+        os.remove(landsat_processed_path)
+    return output_path
 
 def read_raster(raster):
     with rasterio.open(raster) as src:
@@ -256,6 +282,7 @@ def get_best_landsat_tifs(session_directory:str)->str:
     best_landsat_cloud_mask_path = glob.glob(os.path.join(mask_dir, f'{best_file_regex}'))[0]
     return best_landsat_path, best_landsat_cloud_mask_path
 
+
 def read_tiff(input_path: str) -> np.ndarray:
     """
     Reads a TIFF image file and returns it as a NumPy array.
@@ -272,13 +299,8 @@ def read_tiff(input_path: str) -> np.ndarray:
         # change the format to x, y, band
         img = np.moveaxis(img, 0, -1)
         return img
-def read_tiff(input_path:str)->np.ndarray:
-    with rasterio.open(input_path)as src:
-        # reads the image in band,x,y format
-        img = src.read()
-        # change the format to x,y,band
-        img = np.moveaxis(img, 0, -1)
-        return img
+    
+    
 
 def convert_tiff_to_jpg(tiff_array: np.ndarray, filepath: str) -> None:
     """
@@ -336,10 +358,11 @@ def convert_landsat_to_model_format(input_file: str, output_file: str) -> None:
         # Reorder the bands RGB and other bands
         # reordered_bands = np.dstack([band1_normalized, band2_normalized,band3_normalized,] + other_bands_normalized)
         reordered_bands = np.dstack([band3_normalized,band2_normalized,band1_normalized, ] + other_bands_normalized)
+        reordered_bands = reordered_bands[:,:,:3]
         # Get the metadata
         meta = src.meta.copy()
 
-        print(f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}")
+        print(f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}, count: {reordered_bands.shape[2]}")
         # Update the metadata to reflect the number of layers and data type
         meta.update({
             "count": reordered_bands.shape[2],
@@ -683,8 +706,6 @@ def create_tiled_raster(src_filepath, dst_filepath, block_size=256):
             for i in range(1, src.count + 1):
                 band_data = src.read(i)
                 dst.write(band_data, i)
-                
-    print(f'Created a new tiled raster file with block size {block_size}x{block_size} at {dst_filepath}')
     return dst_filepath
 
 def convert_from_float_to_unit16(input_path, output_path):
@@ -717,7 +738,6 @@ def convert_from_float_to_unit16(input_path, output_path):
             nodata=0
         )
 
-    print(f"output_path: {output_path}")
     with rasterio.open(output_path, 'w', **out_meta) as output_raster:
         output_raster.write(modified_data)
     return output_path
@@ -736,7 +756,7 @@ def normalize_band(band: np.ndarray) -> np.ndarray:
     normalized_band = ((band - min_val) / (max_val - min_val)) * 255
     return normalized_band.astype(np.uint8)
 
-def convert_planet_to_model_format(input_file: str, output_file: str) -> None:
+def convert_planet_to_model_format(input_file: str, output_file: str,number_of_bands:int=3) -> None:
     """Process the raster file by normalizing and reordering its bands, and save the output.
     
     This is used for 4 band planet imagery that needs to be reordered to RGBN from BGRN for the zoo model.
@@ -762,9 +782,9 @@ def convert_planet_to_model_format(input_file: str, output_file: str) -> None:
         band3 = src.read(3)  # red
         other_bands = [src.read(i) for i in range(4, src.count + 1)]
 
-        print(f"red min: {np.min(band3)}, red max: {np.max(band3)}")
-        print(f"green min: {np.min(band2)}, green max: {np.max(band2)}")
-        print(f"blue min: {np.min(band1)}, blue max: {np.max(band1)}")
+        # print(f"red min: {np.min(band3)}, red max: {np.max(band3)}")
+        # print(f"green min: {np.min(band2)}, green max: {np.max(band2)}")
+        # print(f"blue min: {np.min(band1)}, blue max: {np.max(band1)}")
 
         # Normalize the bands
         band1_normalized = normalize_band(band1)
@@ -772,17 +792,17 @@ def convert_planet_to_model_format(input_file: str, output_file: str) -> None:
         band3_normalized = normalize_band(band3)
         other_bands_normalized = [normalize_band(band) for band in other_bands]
 
-        print(f"red min: {np.min(band3_normalized)}, red max: {np.max(band3_normalized)}")
-        print(f"green min: {np.min(band2_normalized)}, green max: {np.max(band2_normalized)}")
-        print(f"blue min: {np.min(band1_normalized)}, blue max: {np.max(band1_normalized)}")
+        # print(f"red min: {np.min(band3_normalized)}, red max: {np.max(band3_normalized)}")
+        # print(f"green min: {np.min(band2_normalized)}, green max: {np.max(band2_normalized)}")
+        # print(f"blue min: {np.min(band1_normalized)}, blue max: {np.max(band1_normalized)}")
 
         # Reorder the bands RGB and other bands
         reordered_bands = np.dstack([band3_normalized, band2_normalized, band1_normalized] + other_bands_normalized)
-
+        reordered_bands = reordered_bands[:,:,:number_of_bands]
         # Get the metadata
         meta = src.meta.copy()
 
-        print(f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}")
+        # print(f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}")
         # Update the metadata to reflect the number of layers and data type
         meta.update({
             "count": reordered_bands.shape[2],

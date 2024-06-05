@@ -1,16 +1,21 @@
 # Standard library imports
 import os
+
+os.environ["TF_USE_LEGACY_KERAS"] = "False" # this is needed in order for the classification model to run 
+
 import json
 from typing import List
 import glob
 
 # Third-party imports
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from skimage.filters import threshold_otsu
 from skimage.io import imsave, imread
 from skimage.transform import resize
+from tensorflow import keras
 
 # Local application imports
 from coastseg_planet.processing import read_tiff
@@ -18,6 +23,7 @@ from doodleverse_utils.prediction_imports import est_label_binary, est_label_mul
 from doodleverse_utils.model_imports import dice_coef_loss
 from doodleverse_utils.model_imports import segformer
 from coastseg_planet.plotting import plot_overlay, plot_side_by_side_overlay, plot_per_class_probabilities
+from coastseg_planet.utils import sort_images, resize_array
 from doodleverse_utils.imports import standardize, label_to_colors
 
 # GLOBAL VARIABLES
@@ -44,7 +50,8 @@ CLASS_LABEL_COLORMAPS = [
         "#3399ff",
     ]
 
-def read_file_for_model(file_path:str)->np.ndarray:
+
+def read_file_for_classification_model(file_path:str,length:int=128, width:int=128,bands:int=3)->np.ndarray:
     """
     Reads an image file and returns it as a NumPy array, s it can be read by the model.
 
@@ -57,12 +64,92 @@ def read_file_for_model(file_path:str)->np.ndarray:
     Raises:
     ValueError: If the file type is not supported.
     """
-    if file_path.endswith(".tif"):
-        return read_tiff(file_path)
-    elif file_path.endswith(".jpg") or file_path.endswith(".png"):
-        return imread(file_path)
+    if file_path.endswith(".tif") or file_path.endswith(".tiff"):
+        img_array = read_tiff(file_path)
+        img_array = resize_array(img_array,(length,width,bands))
+        img_array = tf.expand_dims(img_array, 0)
+        return img_array
+    elif file_path.split('.')[-1] in ['jpg','jpeg','png']:
+        img = keras.utils.load_img(file_path, target_size=(length,width))
+        img_array = keras.utils.img_to_array(img)
+        img_array = tf.expand_dims(img_array, 0)
+        return img_array
     else:
         raise ValueError(f"File type not supported: {file_path}")
+
+def run_classification_model(path_to_model:str,
+                  path_to_inference_imgs,
+                  output_folder,
+                  csv_path:str,
+                  regex_pattern='',
+                  move_files:bool=True,):
+    """
+    Runs the trained model on images, classifying them either as good or bad
+    Saves the results to a csv (image_path, class (good or bad), score (0 to 1)
+    Sorts the images into good or bad folders
+    Images should be '.jpg'
+    inputs:
+    path_to_model (str): path to the saved keras model
+    path_to_inference_imgs (str): path to the folder containing images to run the model on
+    output_folder (str): path to save outputs to
+    csv_path (str): csv path to save results to
+    move_files (bool): if True, move the images to the good and bad folders, if False, copy the images
+    returns:
+    csv_path (str): csv path of saved results
+    """
+    model = keras.models.load_model(path_to_model)
+    # get the image paths that end in jpg, jpeg, png or tif
+    file_types = ('*.jpg', '*.jpeg', '*.png','*tif') # the tuple of file types
+    im_paths = []
+    for file_extension in file_types:
+        if regex_pattern:
+            im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, regex_pattern+ file_extension)))
+        else:
+            im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, file_extension)))
+    im_classes = [None]*len(im_paths)
+    im_scores = [None]*len(im_paths)
+    i=0
+    for im_path in im_paths:
+        img_array = read_file_for_classification_model(im_path,128,128,3)
+        predictions = model.predict(img_array)
+        score = float(keras.activations.sigmoid(predictions[0][0]))
+        good_score = score
+        bad_score = 1 - score
+        if good_score>bad_score:
+            im_classes[i] = 'good'
+            im_scores[i] = good_score
+        else:
+            im_classes[i] = 'bad'
+            im_scores[i] = bad_score
+        i=i+1
+    ##save results to a csv
+    df = pd.DataFrame({'im_paths':im_paths,
+                       'im_classes':im_classes,
+                       'im_scores':im_scores})
+    df.to_csv(csv_path)
+    sort_images(csv_path,
+                output_folder,move=move_files)
+    return csv_path
+
+# def read_file_for_model(file_path:str)->np.ndarray:
+#     """
+#     Reads an image file and returns it as a NumPy array, s it can be read by the model.
+
+#     Parameters:
+#     file_path (str): The path to the image file.
+
+#     Returns:
+#     np.ndarray: The image data as a NumPy array.
+
+#     Raises:
+#     ValueError: If the file type is not supported.
+#     """
+#     if file_path.endswith(".tif"):
+#         return read_tiff(file_path)
+#     elif file_path.endswith(".jpg") or file_path.endswith(".png"):
+#         return imread(file_path)
+#     else:
+#         raise ValueError(f"File type not supported: {file_path}")
 
 def apply_model_to_image(input_image:str, save_path:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD:bool=False):
     """
