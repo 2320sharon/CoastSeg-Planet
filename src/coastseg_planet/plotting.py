@@ -11,6 +11,13 @@ import colorsys
 import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
 import matplotlib.gridspec as gridspec
+import matplotlib.colors as mcolors
+
+
+def convert_hex_to_rgba(hex_color):
+    rgb_color = mcolors.hex2color(hex_color)  # returns a tuple (R, G, B) with values between 0 and 1
+    rgba_color = (*rgb_color, 1.0)  # add alpha value
+    return rgba_color
 
 def create_class_color_mapping(mask):
     """
@@ -227,6 +234,7 @@ def plot_image_with_legend(
     all_legend,
     class_color_mapping: dict,
     all_class_color_mapping:dict,
+    reference_shoreline_buffer: "np.ndarray[bool]" = None,
     titles: list[str] = [],
     overlay_opacity: float=0.35,
 ):
@@ -268,14 +276,16 @@ def plot_image_with_legend(
     ax1.set_title(titles[0])
     ax1.axis("off")
 
+    reference_sl_color_mapping = create_class_color_mapping(reference_shoreline_buffer)
+    reference_sl_color_mapping[False]=(0,0,0,0)
+    reference_sl_color_mapping[True]=(0.1450980392156863, 0.8588235294117647, 0.33725490196078434, 1.0)
+    sl_mask = create_mask_image(reference_shoreline_buffer, reference_sl_color_mapping) 
 
-    # colored_mask = np.zeros((*land_water_mask.shape, 4))
-    # for cls, color in class_color_mapping.items():
-    #     colored_mask[land_water_mask == cls] = color
     # Create merged mask and plot
     merged_mask = create_mask_image(land_water_mask, class_color_mapping)
     # # Plot the second image that has the merged the water classes and all the land classes together
     ax2.imshow(original_image)
+    ax2.imshow(sl_mask, alpha=0.40)
     ax2.imshow(merged_mask, alpha=overlay_opacity)
     ax2.plot(pixelated_shoreline[:, 0], pixelated_shoreline[:, 1], "k.", markersize=1)
     ax2.set_title(titles[1])
@@ -309,7 +319,8 @@ def plot_image_with_legend(
 
     all_labels_mask = create_mask_image(all_mask, all_class_color_mapping)
     # # Plot the second image that has the merged the water classes and all the land classes together
-    ax3.imshow(original_image)    
+    ax3.imshow(original_image)  
+    ax3.imshow(sl_mask, alpha=0.45)  
     ax3.imshow(all_labels_mask, alpha=overlay_opacity)
     ax3.plot(pixelated_shoreline[:, 0], pixelated_shoreline[:, 1], "k.", markersize=1)
     ax3.set_title(titles[2])

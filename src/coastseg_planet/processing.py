@@ -18,6 +18,130 @@ import rasterio
 import shapely.geometry as geometry
 import skimage.morphology as morphology
 
+import pyproj
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+
+def create_elevation_mask(tiff_file,output_path,low_threshold,high_threshold):
+    """
+    Create an elevation mask based on a TIFF file.
+
+    Args:
+        tiff_file (str): The path to the input TIFF file.
+        output_path (str): The path to save the output mask TIFF file.
+        low_threshold (float): The lower threshold value for the mask.
+        high_threshold (float): The upper threshold value for the mask.
+
+    Returns:
+        str: The path to the output mask TIFF file.
+    """
+    with rasterio.open(tiff_file) as src:
+        mask_data = src.read(1)  # Read the first band
+
+    # mask_data = np.flipud(mask_data)  # Flip the mask data vertically
+    mask = np.logical_and(mask_data > low_threshold, mask_data < high_threshold)
+    # save the mask to a new tiff file
+    kwargs = src.meta
+    kwargs.update(
+        dtype=rasterio.uint8,
+        count = 1)
+    with rasterio.open(output_path, 'w', **kwargs) as dst:
+            dst.write_band(1, mask.astype(rasterio.uint8))
+    return output_path
+
+def read_topobathy_mask(mask_path:str)->np.ndarray:
+        mask_data = rasterio.open(mask_path).read(1)
+        mask_data =mask_data.astype(bool) # this is because it is a mask
+        return mask_data
+
+def match_resolution_and_grid(source_tiff, target_tiff, output_tiff):
+    # open the target tiff to get its transform and resolution
+    with rasterio.open(target_tiff) as target:
+        target_transform = target.transform
+        target_crs = target.crs
+        target_shape = target.shape
+
+    # open the source tiff and update its metadata to match the target
+    with rasterio.open(source_tiff) as src:
+        src_meta = src.meta.copy()
+        src_meta.update({
+            'crs': target_crs,
+            'transform': target_transform,
+            'width': target_shape[1],
+            'height': target_shape[0]
+        })
+        
+        # create the output tiff and reproject the data
+        with rasterio.open(output_tiff, 'w', **src_meta) as dst:
+            for i in range(1, src.count + 1):
+                reproject(
+                    source=rasterio.band(src, i),
+                    destination=rasterio.band(dst, i),
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=target_transform,
+                    dst_crs=target_crs,
+                    resampling=Resampling.nearest
+                )
+                
+    return output_tiff
+
+def get_pixel_resolution_and_crs(raster_path):
+    with rasterio.open(raster_path) as dataset:
+        # resolution is a tuple (pixel_width, pixel_height)
+        resolution = dataset.res
+        crs = dataset.crs
+        return resolution, crs
+
+def reproject_to_utm(input_tiff, output_tiff):
+    # open the source tiff
+    with rasterio.open(input_tiff) as src:
+        # get the source crs
+        src_crs = src.crs
+        
+        # get the bounds of the raster
+        bounds = src.bounds
+        lon = (bounds.left + bounds.right) / 2
+        lat = (bounds.top + bounds.bottom) / 2
+        
+        # determine the utm zone
+        utm_zone = (int((lon + 180) / 6) % 60) + 1
+        is_northern = lat >= 0
+        utm_crs = pyproj.CRS.from_dict({
+            'proj': 'utm',
+            'zone': utm_zone,
+            'datum': 'WGS84',
+            'south': not is_northern
+        })
+        
+        # calculate the transform and new dimensions
+        transform, width, height = calculate_default_transform(
+            src_crs, utm_crs, src.width, src.height, *src.bounds
+        )
+        
+        # update the metadata
+        kwargs = src.meta.copy()
+        kwargs.update({
+            'crs': utm_crs,
+            'transform': transform,
+            'width': width,
+            'height': height
+        })
+        
+        # create the output tiff and reproject the data
+        with rasterio.open(output_tiff, 'w', **kwargs) as dst:
+            for i in range(1, src.count + 1):
+                reproject(
+                    source=rasterio.band(src, i),
+                    destination=rasterio.band(dst, i),
+                    src_transform=src.transform,
+                    src_crs=src_crs,
+                    dst_transform=transform,
+                    dst_crs=utm_crs,
+                    resampling=Resampling.nearest
+                )
+        return output_tiff
+
+
 def format_landsat_tiff(landsat_path:str)->str:
     """
     Formats a Landsat TIFF file by converting it from float to uint16, changing the blocksize to 256x256,

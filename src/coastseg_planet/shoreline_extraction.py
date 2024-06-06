@@ -5,6 +5,7 @@ from shapely.geometry import LineString
 
 from coastseg_planet.plotting import create_overlay, create_legend, plot_image_with_legend, save_detection_figure, create_class_color_mapping
 from coastseg_planet.processing import read_planet_tiff, get_georef, get_epsg_from_tiff, create_gdf_from_shoreline
+from coastseg_planet import processing 
 from coastsat import SDS_tools
 
 from coastseg.extracted_shoreline import load_image_labels, load_merged_image_labels, remove_small_objects_and_binarize, get_indices_of_classnames, get_class_mapping
@@ -53,18 +54,33 @@ def get_class_indices_from_model_card(npz_file,model_card_path):
     
     return water_classes_indices,land_mask,class_mapping 
     
-def get_shorelines_from_model(planet_cloud_mask_path:str,planet_path:str,model_card_path,npz_file,date,satname,settings,save_path=os.getcwd()):
+def get_shorelines_from_model(planet_cloud_mask_path:str,
+                              planet_path:str,
+                              model_card_path,
+                              npz_file,
+                              date,
+                              satname,
+                              settings,
+                              topobathy_path=None,
+                              save_path=os.getcwd()):
 
     # get the labels for water and land
     water_classes_indices,land_mask,class_mapping  = get_class_indices_from_model_card(npz_file,model_card_path)
+    
     
     all_labels = load_image_labels(npz_file)
     # remove any segments of land that are too small to be considered beach from the land mask
     min_beach_area = 10000
     land_mask = remove_small_objects_and_binarize(land_mask, min_beach_area)
+    # read the elevation msak if it exists
+    mask_data = None
+    if os.path.exists(topobathy_path):
+        mask_data = processing.read_topobathy_mask(topobathy_path)
+    
     # find the contours of the land mask
     contours = simplified_find_contours(
-        land_mask
+        land_mask,
+        reference_shoreline_buffer=mask_data
         )
     planet_cloud_mask = read_planet_tiff(planet_cloud_mask_path,[1])
     planet_RGB = read_planet_tiff(planet_path,[1,2,3])
@@ -94,7 +110,8 @@ def get_shorelines_from_model(planet_cloud_mask_path:str,planet_path:str,model_c
         satname,
         class_mapping,
         settings["output_epsg"],
-        save_path
+        save_path,
+        reference_shoreline_buffer=mask_data
     )
     return shoreline
     
@@ -112,6 +129,7 @@ def shoreline_detection_figures(
     class_mapping: dict,
     output_epsg: int ,
     save_path: str,
+    reference_shoreline_buffer: np.ndarray = None,
 ):
 
     print(f"class_mapping: {class_mapping}")
@@ -130,11 +148,17 @@ def shoreline_detection_figures(
     except:
         pixelated_shoreline = np.array([[np.nan, np.nan], [np.nan, np.nan]])
 
-   
     # Create legend for the shorelines
     black_line = mlines.Line2D([], [], color="k", linestyle="-", label="shoreline")
     # The additional patches to be appended to the legend
     additional_legend_items = [black_line]
+
+    if reference_shoreline_buffer is not None:
+        buffer_patch = mpatches.Patch(
+        color=(0.1450980392156863, 0.8588235294117647, 0.33725490196078434, 1.0), alpha=0.80, label="Reference shoreline buffer"
+        )
+        additional_legend_items.append(buffer_patch)
+
     
     # create a legend for the class colors and the shoreline
     all_class_color_mapping = create_class_color_mapping(all_labels)
@@ -144,7 +168,6 @@ def shoreline_detection_figures(
         class_mapping,all_class_color_mapping, additional_patches=additional_legend_items
     )
 
-    additional_legend_items = [black_line]
     class_color_mapping = create_class_color_mapping(merged_labels)
     merged_classes_legend = create_legend(
         class_mapping={0: "other", 1: "water"},
@@ -154,9 +177,16 @@ def shoreline_detection_figures(
     print(f"all_class_color_mapping: {all_class_color_mapping}")
 
     class_color_mapping = create_class_color_mapping(merged_labels)
-    fig = plot_image_with_legend(im_ms, merged_labels,all_labels,
+    fig = plot_image_with_legend(im_ms, 
+                                 merged_labels,
+                                 all_labels,
                                  pixelated_shoreline,
-                                 merged_classes_legend,all_classes_legend,class_color_mapping,all_class_color_mapping,titles=['Original Image', 'Merged Classes', 'All Classes'],)
+                                 merged_classes_legend,
+                                 all_classes_legend,
+                                 class_color_mapping,
+                                 all_class_color_mapping,
+                                 reference_shoreline_buffer=reference_shoreline_buffer,
+                                 titles=['Original Image', 'Merged Classes', 'All Classes'],)
 
     # save a .jpg under /jpg_files/detection
     if os.path.exists(save_path) == False:
@@ -295,10 +325,11 @@ def simplified_find_contours(
     # make a copy of the im_labels array as a float (this allows find contours to work))
     im_labels_masked = im_labels.copy().astype(float)
     # Apply the cloud mask by setting masked pixels to NaN
-    if cloud_mask:
+    if cloud_mask is not None:
         im_labels_masked[cloud_mask] = np.NaN
     # only keep the pixels inside the reference shoreline buffer
-    if reference_shoreline_buffer:
+    if reference_shoreline_buffer is not None:
+        reference_shoreline_buffer = reference_shoreline_buffer[:im_labels.shape[0],:im_labels.shape[1]]
         im_labels_masked[~reference_shoreline_buffer] = np.NaN
     
     # 0 or 1 labels means 0.5 is the threshold
