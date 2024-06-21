@@ -5,6 +5,23 @@ import pandas as pd
 import shutil
 from scipy.ndimage import zoom
 
+def get_file_path(directory:str, base_filename:str, regex:str="*udm2_clip_combined_mask.tif"):
+    """
+    Get the file path of the cloud mask for the planet image.
+
+    Args:
+        directory (str): The directory where the cloud masks are located.
+        base_filename (str): The base filename of the planet image.
+        regex (str, optional): The regular expression pattern to match the cloud mask filenames. Defaults to "*udm2_clip_combined_mask.tif".
+
+    Returns:
+        str or None: The file path of the cloud mask if found, otherwise None.
+    """
+    cloud_masks_found = glob.glob(os.path.join(directory, f"{base_filename}{regex}"))
+    if cloud_masks_found:
+        return cloud_masks_found[0]
+    return None
+
 
 def move_files(source_dir: str, output_dir: str, file_identifier: str, move: bool = True) -> None:
     """
