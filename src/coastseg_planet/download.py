@@ -1,4 +1,5 @@
 import os
+import re
 from planet import collect
 from planet import Auth, Session, DataClient, OrdersClient, data_filter, order_request
 import planet
@@ -13,12 +14,14 @@ from rasterio.transform import Affine
 import matplotlib
 import numpy as np
 import geopandas as gpd
-from typing import Optional
+from typing import Optional, Tuple
 import bathyreq
 from skimage.transform import resize
 import rasterio
 from typing import Optional
-
+from typing import List
+from datetime import datetime
+from typing import Dict, Any
 
 def download_topobathy(
     site: str,
@@ -142,6 +145,44 @@ def download_topobathy(
     return raster_path
 
 
+async def wait_with_exponential_backoff(client, order_id, state=None, initial_delay=5, max_attempts=200, callback=None):
+    """
+    Wait until the order reaches the desired state using exponential backoff.
+
+    Args:
+        client (planet.Client): The Planet client used to poll the order state.
+        order_id (str): The ID of the order.
+        state (str, optional): State prior to a final state that will end polling. Defaults to None.
+        initial_delay (int, optional): Initial delay between polls in seconds. Defaults to 5.
+        max_attempts (int, optional): Maximum number of polls. Set to zero for no limit. Defaults to 200.
+        callback (Callable[[str], NoneType], optional): Function that handles state progress updates. Defaults to None.
+
+    Returns:
+        str: The state of the order on the last poll.
+    """
+    attempt = 0
+    delay = initial_delay
+
+    while True:
+        order_state = await client.get_order(order_id)
+        current_state = order_state["state"]
+        
+        if callback:
+            callback(current_state)
+
+        if state and current_state == state:
+            return current_state
+        if current_state in ["success", "failed", "cancelled"]:
+            return current_state
+
+        if max_attempts > 0 and attempt >= max_attempts:
+            raise Exception(f"Maximum attempts reached: {max_attempts}")
+
+        attempt += 1
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, 180)  # Cap the delay to a maximum of 180 seconds (3 minutes)
+
+
 class FixPointNormalize(matplotlib.colors.Normalize):
     """
     Inspired by https://stackoverflow.com/questions/20144529/shifted-colorbar-matplotlib
@@ -173,6 +214,8 @@ async def download_order_by_name(
     overwrite: bool = False,
     continue_existing: bool = False,
     order_states: list = None,
+    product_bundle: str = "ortho_analytic_4b",
+    **kwargs,
 ):
     """
     Downloads an order by name from the Planet API.
@@ -185,6 +228,9 @@ async def download_order_by_name(
         end_date (str, optional): The end date for the order. Defaults to an empty string.
         overwrite (bool, optional): Whether to overwrite an existing order with the same name. Defaults to False.
         order_states (list, optional): The list of states of the order. Defaults to ['success'].
+    kwargs:
+        cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
+    
     Raises:
         ValueError: If start_date and end_date are not specified when creating a new order.
         ValueError: If roi is not specified when creating a new order.
@@ -197,20 +243,18 @@ async def download_order_by_name(
     elif isinstance(order_states, str):
         order_states = [order_states]
 
+
     async with planet.Session() as sess:
         cl = sess.client("orders")
         # check if an existing order with the same name exists
-        order_id, order_state = await get_order_id_by_name(
+        order_ids = await get_order_ids_by_name(
             cl, order_name, states=order_states
         )
-        if order_id is not None and not overwrite:
-            print(f"Order with name {order_name} already exists")
-            if order_state == "running":
-                print(f"Please wait the order is still running")
-            await get_existing_order(
-                cl, order_id, output_path, continue_existing=continue_existing
+        if order_ids != [] and not overwrite:
+            print(f"Order with name {order_name} already exists. Downloading...")
+            await get_multiple_existing_orders(
+                cl, order_ids, output_path, continue_existing=continue_existing
             )
-        # if no order id or overwrite is true, then create a new order & download it
         else:
             action = "Overwriting" if overwrite else "Creating"
             print(f"{action} order with name {order_name}")
@@ -221,7 +265,7 @@ async def download_order_by_name(
             if roi == {}:
                 raise ValueError("roi must be specified to create a new order")
             await make_order_and_download(
-                roi, start_date, end_date, order_name, output_path
+                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,**kwargs
             )
 
 
@@ -246,7 +290,7 @@ def get_ids(items):
     return ids
 
 
-def create_combined_filter(roi, time1, time2):
+def create_combined_filter(roi: str, time1: str, time2: str, cloud_cover: float = 0.99,product_bundles="basic_analytic_4b") -> Dict[str, Any]:
     """
     Create a combined filter for downloading planet imagery.
 
@@ -254,6 +298,7 @@ def create_combined_filter(roi, time1, time2):
         roi (str): Path to geojson with bounds for imagery.
         time1 (str): Start time in the format YYYY-MM-DD.
         time2 (str): End time in the format YYYY-MM-DD.
+        cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
 
     Returns:
         dict: Request JSON to download planet imagery.
@@ -266,19 +311,24 @@ def create_combined_filter(roi, time1, time2):
     month_max = int(time2[-5:-3])
     year_max = int(time2[0:4])
 
-    analytic_filter = data_filter.asset_filter(["basic_analytic_4b"])
+    if isinstance(product_bundles, str):
+        product_bundles = [product_bundles]
+    elif not isinstance(product_bundles, list):
+        raise ValueError("product_bundles must be a string or a list of strings")
+    
+    analytic_filter = data_filter.asset_filter(product_bundles)
     data_range_filter = data_filter.date_range_filter(
         "acquired",
         datetime(month=month_min, day=day_min, year=year_min),
         datetime(month=month_max, day=day_max, year=year_max),
     )
 
+    print(f"Getting data from {time1} to {time2} with cloud cover less than {cloud_cover}")
+
+    cloud_cover_filter = data_filter.range_filter("cloud_cover", lte=cloud_cover, )
     geom_filter = data_filter.geometry_filter(roi)
-
-    # instrument_filter = data_filter.string_in_filter("instrument", ["PS2", "PSB.SD","PS2.SD"])
-
     # combining aoi and time and clear percent filter
-    combined_filter = data_filter.and_filter([geom_filter, data_range_filter])
+    combined_filter = data_filter.and_filter([geom_filter, data_range_filter,cloud_cover_filter,analytic_filter])
 
     return combined_filter
 
@@ -321,52 +371,64 @@ def get_ids_by_date(items):
     ids_by_date = dict((d, get_date_item_ids(d, items)) for d in unique_acquired_dates)
     return ids_by_date
 
-
 async def create_and_download(client, request, download_path: str):
     """
     Creates an order using the provided client and request, and then downloads the order to the specified download path.
 
     Args:
-        client (PlanetClient): The Planet client used to create the order and download the data.
+        client (planet.Client): The Planet client used to create the order and download the data.
         request (dict): The request object used to create the order.
         download_path (str): The directory where the downloaded data will be saved.
 
     Returns:
-        None
+        dict: The order details.
     """
-    # first create the order and wait for it to be created
+    # First create the order and wait for it to be created
     with planet.reporting.StateBar(state="creating") as reporter:
         order = await client.create_order(request)
         reporter.update(state="created", order_id=order["id"])
-        await client.wait(order["id"], callback=reporter.update_state)
-    # download the order to the specified directory
+        await wait_with_exponential_backoff(client, order["id"], callback=reporter.update_state)
+    
+    # Download the order to the specified directory
     await client.download_order(order["id"], download_path, progress_bar=True)
     return order
 
 
-async def get_order_id_by_name(client, order_name, states=None):
+async def get_order_ids_by_name(client, order_name: str, states: Optional[List[str]] = None) -> List[Tuple[str, str]]:
     """
-    Retrieves the order ID by its name and state(s).
+    Retrieves the order IDs by their name or regex pattern and state(s).
 
     Args:
         client: The client object used to interact with the API.
-        order_name (str): The name of the order to search for.
+        order_name (str): The name or regex pattern of the order name to search for.
         states (list, optional): The list of states of the order. Defaults to ['success'].
 
     Returns:
-        str: The ID of the order if found, None otherwise.
+        List[Tuple[str, str]]: A list of tuples containing the ID and state of the matching orders.
     """
     if states is None:
         states = ["success"]
 
     orders_list = await collect(client.list_orders())
+    matching_orders = []
+
+    # First, try to find exact matches
     for order in orders_list:
         if order["name"] == order_name and order["state"] in states:
-            return order["id"], order["state"]
+            matching_orders.append(order["id"])
 
-    print(f"Order not found with name {order_name} and states {states}")
-    return None, None
+    # Use regex matching
+    order_regex = f"^{order_name}(_batch.*)?$"
+    pattern = re.compile(order_regex)
 
+    for order in orders_list:
+        if pattern.match(order["name"]) and order["state"] in states:
+            matching_orders.append(order["id"])
+
+    if not matching_orders:
+        print(f"Order not found with name or pattern {order_name} and states {states}")
+
+    return matching_orders
 
 def validate_order_downloaded(download_path: str) -> bool:
     """
@@ -419,30 +481,6 @@ def read_config(config_file_path: str):
     return config
 
 
-async def download_existing_order(order_name: str, config_file_path: str):
-    """
-    Downloads the contents of an existing order from the Planet API.
-
-    Returns:
-        None
-    """
-    # read the api key from the config file
-    config = read_config(config_file_path)
-    os.environ["API_KEY"] = config["DEFAULT"]["API_KEY"]
-
-    auth = Auth.from_env("API_KEY")
-    auth.store()
-
-    session = Session(auth=auth)
-    client = OrdersClient(session=session)
-    order_id = await get_order_id_by_name(client, order_name)
-    # create the path to download the order to the 'downloads' directory
-    download_path = os.path.join(os.getcwd(), "downloads", order_name)
-
-    await download_order_contents(client, order_id, download_path)
-    return
-
-
 def get_ids_by_dates(items):
     """
     Returns a dictionary mapping of acquired dates of the Image IDs to lists of item IDs.
@@ -487,20 +525,37 @@ def get_tools(
     return tools
 
 
-async def get_item_list(roi, start_date, end_date):
+async def get_item_list(roi, start_date, end_date,**kwargs):
+    """
+    Get a list of item IDs based on the provided parameters.
+
+    KwArgs:
+        cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
+    
+    
+    """
+    defaults = {
+        "cloud_cover": 0.99,
+    }
+    defaults.update(kwargs)
 
     async with planet.Session() as sess:
         cl = sess.client("data")
 
-        combined_filter = create_combined_filter(roi, start_date, end_date)
+        combined_filter = create_combined_filter(roi, start_date, end_date,**defaults)
 
         # Create the order request
+        
         request = await cl.create_search(
             name="temp_search", search_filter=combined_filter, item_types=["PSScene"]
         )
-
-        items = cl.run_search(search_id=request["id"])
+        # stats = await cl.get_stats(item_types=["PSScene"], interval="day",search_filter=combined_filter)
+        # print(stats)
+        # 100,000 is the highest limit for the search request that has been tested
+        # create a search request that returns 100 items per page see this for an example https://github.com/planetlabs/notebooks/blob/master/jupyter-notebooks/Data-API/planet_python_client_introduction.ipynb
+        items = cl.run_search(search_id=request["id"],limit=10000)
         item_list = [i async for i in items]
+        # print(f"items: {item_list}")
         # get the ids of the items group by acquired date
         ids = get_ids(item_list)
         return ids
@@ -529,7 +584,7 @@ async def order_by_ids(
             name=order_name,
             products=[
                 planet.order_request.product(
-                    item_ids=ids, product_bundle="analytic_udm2", item_type="PSScene"
+                    item_ids=ids, product_bundle="ortho_analytic_4b", item_type="PSScene"
                 )
             ],
             tools=tools,
@@ -538,6 +593,40 @@ async def order_by_ids(
         # Create and download the order
         order = await create_and_download(cl, request, download_path)
 
+
+async def process_order_batch(cl, ids_batch, tools, order_name_base, download_path, product_bundle = "ortho_analytic_4b"):
+    order_name = f"{order_name_base}_{len(ids_batch)}"
+    request = planet.order_request.build_request(
+        name=order_name,
+        products=[
+            planet.order_request.product(
+                item_ids=ids_batch, product_bundle=product_bundle, item_type="PSScene"
+            )
+        ],
+        tools=tools,
+    )
+
+    # Create and download the order
+    await create_and_download(cl, request, download_path)
+
+async def process_orders_in_batches(cl, ids: List[str], tools, download_path, order_name_base,product_bundle = "ortho_analytic_4b"):
+    # Split the ids list into batches of 500 or less
+    id_batches = [ids[i:i + 500] for i in range(0, len(ids), 500)]
+    
+    # Create tasks for each batch
+    tasks = []
+    for i, ids_batch in enumerate(id_batches):
+        print(f"processing batch #{i + 1} of size {len(ids_batch)} of {len(id_batches)}")
+        task = process_order_batch(cl, ids_batch, tools, f"{order_name_base}_batch_{i + 1}", download_path,product_bundle)
+        tasks.append(task)
+    
+    # Download orders in parallel, no more than 5 at a time
+    semaphore = asyncio.Semaphore(5)
+    async def limited_parallel_execution(task):
+        async with semaphore:
+            await task
+    
+    await asyncio.gather(*(limited_parallel_execution(task) for task in tasks))
 
 async def make_order_and_download(
     roi,
@@ -548,6 +637,8 @@ async def make_order_and_download(
     clip: bool = True,
     toar: bool = True,
     coregister: bool = False,
+    product_bundle:str = "ortho_analytic_4b",
+    **kwargs,
 ):
     """
     Creates an order request for downloading satellite images from Planet API based on the given parameters and downloads the images to the specified output folder.
@@ -560,8 +651,12 @@ async def make_order_and_download(
         output_folder (str): The folder where the downloaded images will be saved.
         clip (bool, optional): Whether to clip the images to the ROI. Defaults to True.
         toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
-        coregister (bool, optional): Whether to coregister the images. Defaults to False.
+        coregister (bool, optional): Whether to coregister the images. Defaults to False.   
+        product_bundle (str, optional): The product bundle to download. Defaults to "ortho_analytic_4b".
 
+    kwargs:
+        cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
+        
     Returns:
         None
     """
@@ -569,42 +664,29 @@ async def make_order_and_download(
     async with planet.Session() as sess:
         cl = sess.client("data")
 
-        combined_filter = create_combined_filter(roi, start_date, end_date)
+        combined_filter = create_combined_filter(roi, start_date, end_date,**kwargs)
 
         # Create the order request
         request = await cl.create_search(
             name="temp_search", search_filter=combined_filter, item_types=["PSScene"]
         )
 
-        items = cl.run_search(search_id=request["id"])
+        items = cl.run_search(search_id=request["id"],limit=10000)
         item_list = [i async for i in items]
         # get the ids of the items group by acquired date
         ids = get_ids(item_list)
+        print(f"Requesting {len(ids)} items")
 
         # create a client for the orders API
         cl = sess.client("orders")
 
         # get the tools to be applied to the order
         tools = get_tools(roi, clip, toar, coregister, ids[0])
-        # analytic_udm2
-        # By default use the clip and TOAR tools to clip the image to the roi and convert the images from radience to TOAR reflectance
-
-        request = planet.order_request.build_request(
-            name=order_name,
-            products=[
-                planet.order_request.product(
-                    item_ids=ids, product_bundle="analytic_udm2", item_type="PSScene"
-                )
-            ],
-            tools=tools,
-        )
-
-        # Create and download the order
-        order = await create_and_download(cl, request, download_path)
-
+        # Process orders in batches
+        await process_orders_in_batches(cl, ids, tools, download_path, order_name,product_bundle=product_bundle)
 
 async def get_existing_order(
-    client, order_id, download_path="downloads", continue_existing=False
+    client, order_id:str, download_path="downloads", continue_existing=False
 ) -> Optional[dict]:
     """
     Downloads the contents of an order from the client.
@@ -634,26 +716,27 @@ async def get_existing_order(
     else:
         print("Order is not yet fulfilled.")
         return None
+    
+async def get_multiple_existing_orders(
+    client, order_ids, download_path="downloads", continue_existing=False, max_concurrent_downloads=5
+):
+    """
+    Downloads the contents of multiple orders from the client in parallel with a limit on concurrent downloads.
 
+    Args:
+        client: The client object used to interact with the API.
+        order_ids: The list of order IDs to download.
+        download_path: The path where the downloaded files will be saved. Defaults to 'downloads'.
+        continue_existing: Flag indicating whether to continue downloading existing orders. Defaults to False.
+        max_concurrent_downloads: The maximum number of concurrent downloads. Defaults to 5.
+    Returns:
+        List[Optional[dict]]: A list of orders if successful, None otherwise.
+    """
+    semaphore = asyncio.Semaphore(max_concurrent_downloads)
 
-# async def download_order_contents(client, order_id, download_path='downloads'):
-#     """
-#     Downloads the contents of an order from the client.
+    async def download_order_with_semaphore(order_id):
+        async with semaphore:
+            return await get_existing_order(client, order_id, download_path, continue_existing)
 
-#     Args:
-#         client: The client object used to interact with the API.
-#         order_id: The ID of the order to download.
-#         download_path: The path where the downloaded files will be saved. Defaults to 'downloads'.
-
-#     Returns:
-#         None
-#     """
-#     order = await client.get_order(order_id)
-#     if order['state'] == 'success':
-#         if validate_order_downloaded(download_path):
-#             print(f"Order already downloaded to {download_path}")
-#             return
-#         else:
-#             print(f"Downloading the order to {download_path}")
-#     else:
-#         print('Order is not yet fulfilled.')
+    download_tasks = [download_order_with_semaphore(order_id) for order_id in order_ids]
+    return await asyncio.gather(*download_tasks)
