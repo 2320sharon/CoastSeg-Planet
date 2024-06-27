@@ -4,7 +4,6 @@ __pycache__/
 *$py.class
 
 # config files with sensitive information
-config.ini
 
 # C extensions
 *.so
