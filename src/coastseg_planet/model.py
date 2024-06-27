@@ -106,6 +106,7 @@ def run_classification_model(path_to_model:str,
             im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, regex_pattern+ file_extension)))
         else:
             im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, file_extension)))
+    # print(f"im_paths: {im_paths}")
     im_classes = [None]*len(im_paths)
     im_scores = [None]*len(im_paths)
     i=0

@@ -276,10 +276,11 @@ def plot_image_with_legend(
     ax1.set_title(titles[0])
     ax1.axis("off")
 
-    reference_sl_color_mapping = create_class_color_mapping(reference_shoreline_buffer)
-    reference_sl_color_mapping[False]=(0,0,0,0)
-    reference_sl_color_mapping[True]=(0.1450980392156863, 0.8588235294117647, 0.33725490196078434, 1.0)
-    sl_mask = create_mask_image(reference_shoreline_buffer, reference_sl_color_mapping) 
+    if reference_shoreline_buffer is not None:
+        reference_sl_color_mapping = create_class_color_mapping(reference_shoreline_buffer)
+        reference_sl_color_mapping[False]=(0,0,0,0)
+        reference_sl_color_mapping[True]=(0.1450980392156863, 0.8588235294117647, 0.33725490196078434, 1.0)
+        sl_mask = create_mask_image(reference_shoreline_buffer, reference_sl_color_mapping) 
 
     # Create merged mask and plot
     merged_mask = create_mask_image(land_water_mask, class_color_mapping)
