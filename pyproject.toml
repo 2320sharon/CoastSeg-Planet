@@ -17,7 +17,13 @@ keywords = [
 ]
 # find` directive with `include` or `exclude`
 description = "An interactive python package for satellite derived shoreline workflows using Planet imagery."
-dependencies = []
+dependencies = [
+  "coastseg",
+  "planet",
+  "rasterio",
+  "arosics",
+  "bathyreq",
+]
 # dependencies = [
 #   "h5py>=3.10.0",
 #   "aiohttp",

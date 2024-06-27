@@ -1,0 +1,4 @@
+pytest
+black
+tensorflow==2.15
+pip install mkdocs-material
