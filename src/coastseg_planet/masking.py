@@ -1,8 +1,81 @@
 import os
 import rasterio
 import numpy as np
+import glob
 from skimage import morphology
+from coastseg_planet.shoreline_extraction import get_class_indices_from_model_card
+from coastseg_planet.processing import get_base_filename
 
+def create_water_bad_mask_directory(directory: str,
+                                    model_card_path: str,
+                                    input_suffix: str = "*udm2_clip_combined_mask.tif",
+                                    output_suffix: str = "_bad_mask.tif",
+                                    npz_suffix: str = "_TOAR_processed_coregistered_global_res.npz",
+                                    separator="_3B",
+                                    ):
+    """
+    Creates combines the water masks from each segmentation with the bad mask (no data & cloud mask) and saves them to a new file with the given suffix for a given directory of cloud paths.
+
+    Args:
+        directory (str): The directory containing the cloud paths.
+        model_card_path (str): The path to the model card.
+        input_suffix (str, optional): The suffix of the input files. Defaults to "*udm2_clip_combined_mask.tif".
+        output_suffix (str, optional): The suffix of the output files. Defaults to "_bad_mask.tif".
+        npz_suffix (str, optional): The suffix of the npz files. Defaults to "_TOAR_processed_coregistered_global_res.npz".
+        separator (str, optional): The separator used in the filenames. Defaults to "_3B".
+
+    Returns:
+        None
+    """
+    cloud_paths = glob.glob(os.path.join(directory, f"*{separator}{input_suffix}"))
+    for cloud_path in cloud_paths:
+        base_filename = get_base_filename(cloud_path, separator)
+        npz_path = os.path.join(directory, 'out', f"{base_filename}{separator}{npz_suffix}")
+        if not os.path.isfile(npz_path) or not npz_path.endswith(".npz"):
+            print(f"Skipping {npz_path} because it does not exist")
+            continue
+        water_classes_indices, water_mask, class_mapping  = get_class_indices_from_model_card(npz_path,model_card_path) 
+        output_path = combine_masks(cloud_path,water_mask,output_suffix)
+        print(f"Created {output_path}")
+
+def combine_masks(mask_path,mask:np.ndarray,suffix:str="_bad_mask.tif"):
+    """
+    Combine a no data mask  with a water mask and save to a new file.
+
+    Parameters:
+    mask_path (str): The path to the UDM file.
+    mask (numpy.ndarray): The mask to be combined with the bad mask. (typically a water mask for coreg purposes)
+    suffix (str): The suffix to be added to the combined mask file.
+
+    Returns:
+    combined_path (str): The path to the combined mask file.
+
+    Raises:
+    FileNotFoundError: If the UDM file does not exist.
+    """
+    with rasterio.open(mask_path) as src:
+        bad_mask = src.read(1)
+        if bad_mask.shape != mask.shape:
+            bad_mask = bad_mask[:mask.shape[0],:mask.shape[1]] # cut off the last row and column if the shape does not match
+
+        # combine the cloud and shadow mask
+        combined_mask = np.logical_or(bad_mask, mask)
+
+        # write the combined mask to a new file
+        profile = src.profile
+        profile.update(dtype=rasterio.uint8, count=1)
+
+        # write to a new file
+        # mask_out = combined_mask > 0
+        base_filename = os.path.basename(mask_path.split(".")[-2])
+        combined_path = os.path.join(
+            os.path.dirname(mask_path), base_filename + suffix
+        )
+
+        with rasterio.open(combined_path, "w", **profile) as dst:
+            dst.write(combined_mask.astype(rasterio.uint8), 1)
+
+        return combined_path
 
 def apply_cloud_mask_correction(
     im_cloud_mask,
@@ -116,21 +189,27 @@ def save_landsat_cloud_mask(
     return output_path
 
 
-def apply_cloudmask_to_dir(input_dir):
+def apply_cloudmask_to_dir(input_dir,suffix="_3B_udm2_clip.tif",output_suffix="_combined_mask.tif"):
     """
     Apply cloud and shadow mask to all TIFF files in the given directory.
 
+    This function works specifically for the UDM files from the PlanetScope dataset.
+    It creates a combined cloud and shadow mask from the given UDM file.
+    Specifically it expects cloud mask at band 6 and the no data mask at band 8.
+
     Args:
         input_dir (str): The path to the directory containing the TIFF files.
+        suffix (str): The suffix of the TIFF files to be processed. The default is "_3B_udm2_clip.tif".
+
 
     Returns:
         None
     """
     for file in os.listdir(input_dir):
-        if file.endswith("3B_udm2_clip.tif"):
+        if file.endswith(suffix):
             udm_path = os.path.join(input_dir, file)
             print(f"Processing {udm_path}")
-            create_cloud_and_nodata_mask(udm_path)
+            create_cloud_and_nodata_mask(udm_path,output_suffix)
             # create_cloud_and_shadow_mask(udm_path)
 
 
@@ -146,12 +225,13 @@ def load_udm(udm_filename):
     return udm
 
 
-def create_cloud_and_nodata_mask(udm_path):
+def create_cloud_and_nodata_mask(udm_path,output_suffix="_combined_mask.tif"):
     """
     Create a combined cloud and shadow mask from the given UDM (User-Defined Mask) file.
 
     Parameters:
     udm_path (str): The path to the UDM file.
+    output_suffix (str): The suffix to be to the name combined mask file.
 
     Returns:
     numpy.ndarray: The combined cloud and shadow mask.
@@ -178,14 +258,8 @@ def create_cloud_and_nodata_mask(udm_path):
 
         base_filename = os.path.basename(udm_path.split(".")[-2])
         combined_path = os.path.join(
-            os.path.dirname(udm_path), base_filename + "_combined_mask.tif"
+            os.path.dirname(udm_path), base_filename + output_suffix
         )
-        # combined_bool_path = os.path.join(os.path.dirname(udm_path), base_filename+'_combined_mask_bool.tif')
-
-        # with rasterio.open(combined_bool_path, 'w', **profile) as dst:
-        #     print(f"Saving combined mask to {combined_bool_path}")
-        #     dst.write(mask_out.astype(rasterio.uint8), 1)
-
         with rasterio.open(combined_path, "w", **profile) as dst:
             print(f"Saving combined mask to {combined_path}")
             dst.write(combined_mask.astype(rasterio.uint8), 1)
