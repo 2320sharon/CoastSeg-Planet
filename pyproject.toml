@@ -23,6 +23,7 @@ dependencies = [
   "rasterio",
   "arosics",
   "bathyreq",
+  "imageio[ffmpeg]"
 ]
 # dependencies = [
 #   "h5py>=3.10.0",
