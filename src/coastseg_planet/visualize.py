@@ -30,7 +30,7 @@ def resize_to_divisible_by_16(image):
     return np.pad(image, ((0, new_height - height), (0, new_width - width), (0, 0)), mode='constant')
 
 def create_movie_from_tiffs(tiff_files, output_movie, fps=10):
-    writer = imageio.get_writer(output_movie, fps=fps)
+    writer = imageio.get_writer(output_movie, fps=fps,format='FFMPEG')
 
     max_height, max_width = find_max_dimensions(tiff_files)
 
@@ -46,10 +46,11 @@ def create_movie_from_tiffs(tiff_files, output_movie, fps=10):
 
     writer.close()
     print(f"Movie saved to {os.path.abspath(output_movie)}")
-    
-# # specify the pattern to match your tiff files
-# good_dir = r"C:\development\coastseg-planet\CoastSeg-Planet\santa_cruz_boardwalk_QGIS\files\good"
-# tiff_files = sorted(glob.glob(os.path.join(good_dir, f"*3B_TOAR_processed_coregistered.tif")))
-# output_movie = 'coregistered_santa_cruz_planet2.mp4'
 
-# create_movie_from_tiffs(tiff_files, output_movie)
+    
+# # # specify the pattern to match your tiff files
+# # good_dir = r"C:\development\coastseg-planet\CoastSeg-Planet\santa_cruz_boardwalk_QGIS\files\good"
+# # tiff_files = sorted(glob.glob(os.path.join(good_dir, f"*3B_TOAR_processed_coregistered.tif")))
+# # output_movie = 'coregistered_santa_cruz_planet2.mp4'
+
+# # create_movie_from_tiffs(tiff_files, output_movie)
