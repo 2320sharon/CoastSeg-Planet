@@ -26,13 +26,15 @@ from coastseg_planet import visualize
 
 
 def generate_coreg_movie(
-    input_dir,
-    ref_path,
-    ref_mask,
-    base_movie_name,
+    input_dir:str,
+    ref_path:str,
+    ref_mask:str,
+    base_movie_name:str,
     output_suffix="_TOAR_processed_coregistered_global.tif",
-    use_local=True,
-    overwrite=False,
+    bad_mask_suffix:str = "udm2_clip_combined_mask.tif",
+    use_local:bool=True,
+    overwrite:bool=False,
+    **kwargs,
 ):
     """
     Generate a movie of coregistered TIFF files.
@@ -51,6 +53,7 @@ def generate_coreg_movie(
         ref_path,
         ref_mask,
         output_suffix=output_suffix,
+        bad_mask_suffix=bad_mask_suffix,
         use_local=use_local,
         overwrite=overwrite,
         **kwargs,
@@ -87,14 +90,17 @@ kwargs = {
 
 # If downloaded with TOAR tool applied don't convert to TOAR again (set this to False)
 convert_to_TOAR = False
-run_good_bad_classification = True  # @todo make this true
+run_good_bad_classification = False  # @todo make this true
+APPLY_WATER_MASK = False
+
+bad_mask_suffix = "udm2_clip_combined_mask.tif"
 
 # input the coastseg session with landsat data downloaded
 # downloaded_directory = (
 #     r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime06-07-24__02_01_53"
 # )
 # this is where we would download the ROI with planet or load it if it was already downloaded
-planet_dir = r"C:\development\coastseg-planet\downloads\Ak_spit_TOAR_enabled_analytic_udm2\3cb4ba43-f85e-4189-b388-d9456120955d\PSScene"
+planet_dir = r"C:\development\coastseg-planet\downloads\Santa_Cruz_boardwalk_TOAR_enabled_analytic_udm2_full_dataset_cloud_cover_60\de351ce5-5797-4972-b1c3-381da78ea4e8\PSScene"
 good_dir = os.path.join(planet_dir, "good")
 model_path = r"C:\development\coastseg-planet\CoastSeg-Planet\models\best_rgb.h5"
 csv_path = os.path.join(planet_dir, "classification_results.csv")
@@ -104,8 +110,9 @@ path_to_inference_imgs = planet_dir
 # get the landsat with the lowest RMSE and the cloud cover mask
 # landsat_dir = get_best_landsat_from_dir(downloaded_directory)
 # landsat_path, raw_landsat_cloud_mask_path = get_best_landsat_tifs(downloaded_directory)
-landsat_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime06-21-24__03_19_51\L9\ms\2022-10-15-22-13-16_L9_ID_1_datetime06-21-24__03_19_51_ms.tif"
-raw_landsat_cloud_mask_path = r"C:\development\doodleverse\coastseg\CoastSeg\data\ID_1_datetime06-21-24__03_19_51\L9\mask\2022-10-15-22-13-16_L9_ID_1_datetime06-21-24__03_19_51_mask.tif"
+
+landsat_path = r"C:\development\coastseg-planet\CoastSeg-Planet\landsat\santa_cruz_boardwalk\ID_1_datetime05-21-24__01_55_42\L8\ms\2024-03-13-18-45-55_L8_ID_1_datetime05-21-24__01_55_42_ms.tif"
+raw_landsat_cloud_mask_path = r"C:\development\coastseg-planet\CoastSeg-Planet\landsat\santa_cruz_boardwalk\ID_1_datetime05-21-24__01_55_42\L8\mask\2024-03-13-18-45-55_L8_ID_1_datetime05-21-24__01_55_42_mask.tif"
 # print(f"The best satellite is {landsat_dir}")
 print(f"The best landsat tiff is at : {landsat_path}")
 print(f"The best landsat cloud mask is at : {raw_landsat_cloud_mask_path}")
@@ -163,9 +170,9 @@ else:
 
 crs = None
 # crs = rasterio.open(tiff_paths[0]).crs.to_epsg()
-crs =32604
-processing.reproject_raster_in_place(landsat_processed_path, crs)
-processing.reproject_raster_in_place(landsat_cloud_mask_path, crs)
+# crs =32604
+# processing.reproject_raster_in_place(landsat_processed_path, crs)
+# processing.reproject_raster_in_place(landsat_cloud_mask_path, crs)
 # only convert if the planet rasters do not have the same CRS as the landsat raster
 # if rasterio.open(landsat_processed_path).crs != rasterio.open(tiff_paths[0]).crs:
 #     crs = rasterio.open(landsat_processed_path).crs.to_epsg()
@@ -196,23 +203,43 @@ if not os.path.exists(good_dir):
     good_dir = planet_dir
 
 # apply cloud mask to directory of planet images and generate cloud masks in that directory for each tif
-apply_cloudmask_to_dir(good_dir)
+apply_cloudmask_to_dir(good_dir,output_suffix="_combined_mask.tif")
 
 # if the coregistered tiffs already exist delete them
 # delete any of the existing coregistered tiffs
-# tiff_files = sorted(glob.glob(os.path.join(good_dir, f"*3B_TOAR_processed_coregistered_global.tif")))
+tiff_files = sorted(glob.glob(os.path.join(good_dir, f"*coregistered*.tif")))
+for tiff_file in tiff_files:
+    print(f"Removing {os.path.basename(tiff_file)}")
+    os.remove(tiff_file)
 
+
+
+if APPLY_WATER_MASK:
+    # run the model for each good tiff
+    model.apply_model_to_dir(good_dir,"_TOAR_model_format.tif")
+
+    # update the bad mask with the water mask
+    # @todo don't have this be hardcoded
+    model_card_path = r'C:\development\coastseg-planet\CoastSeg-Planet\output_zoo\coastseg_planet\coastseg_planet\config\model_card.yml'
+    masking.create_water_bad_mask_directory(good_dir,model_card_path,
+                                            input_suffix="_combined_mask.tif",
+                                            output_suffix="_bad_mask.tif",
+                                            npz_suffix="_TOAR_model_format_res.npz")
+    # set the bad mask suffix to be the updated bad mask that contains the water mask
+    bad_mask_suffix="_bad_mask.tif"
 
 # apply global coregistration
-base_movie_name = "Ak_spit_TOAR_enabled_analytic_udm2"
+base_movie_name = "Santa_Cruz_boardwalk_TOAR_enabled_analytic_udm2_full_dataset_cloud_cover_60"
 generate_coreg_movie(
     good_dir,
     landsat_processed_path,
     landsat_cloud_mask_path,
     base_movie_name,
     output_suffix="_TOAR_processed_coregistered_global.tif",
+    bad_mask_suffix=bad_mask_suffix,
     use_local=False,
-    overwrite=False,
+    overwrite=True,
+    **kwargs,
 )
 print(f"Completed global coregistering {len(tiff_paths)} tiffs")
 
@@ -223,8 +250,10 @@ generate_coreg_movie(
     landsat_cloud_mask_path,
     base_movie_name,
     output_suffix="_TOAR_processed_coregistered_local.tif",
+    bad_mask_suffix=bad_mask_suffix,
     use_local=True,
-    overwrite=False,
+    overwrite=True,
+    **kwargs,
 )
 print(f"Completed local coregistering {len(tiff_paths)} tiffs")
 
