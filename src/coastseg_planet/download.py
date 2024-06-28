@@ -740,3 +740,30 @@ async def get_multiple_existing_orders(
 
     download_tasks = [download_order_with_semaphore(order_id) for order_id in order_ids]
     return await asyncio.gather(*download_tasks)
+
+# get the order ids
+async def cancel_order_by_name(
+    order_name: str,
+    order_states: list = None,
+):
+    """
+    Cancels an order by its name.
+
+    Args:
+        order_name (str): The name of the order to cancel.
+        order_states (list, optional): A list of order states to filter the search. Defaults to None.
+
+    Returns:
+        None
+    """
+    async with planet.Session() as sess:
+        cl = sess.client("orders")
+        # check if an existing order with the same name exists
+        order_ids = await get_order_ids_by_name(
+            cl, order_name, states=order_states
+        )
+        if order_ids == []:
+            print(f"No order found with name {order_name} was found with states {order_states}")
+        print(f"order_ids requested to cancel: {order_ids}")
+        canceled_orders_info=await cl.cancel_orders(order_ids)
+        print(f"canceled_orders_info: {canceled_orders_info}")
