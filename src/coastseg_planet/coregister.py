@@ -18,13 +18,32 @@ def coregister_directory(
     directory: str,
     landsat_path: str,
     landsat_cloud_mask_path: str,
-    input_suffix: str = "*_TOAR_model_format.tif",
+    input_suffix: str = "_TOAR_model_format.tif",
     output_suffix: str = "_TOAR_processed_coregistered.tif",
     separator="_3B",
+    bad_mask_suffix:str = "udm2_clip_combined_mask.tif",
     use_local: bool = True,
     overwrite: bool = False,
     **kwargs,
 ):
+    """
+    Coregisters multiple planet images in a directory to Landsat images.
+
+    Args:
+        directory (str): The directory containing the planet images.
+        landsat_path (str): The path to the Landsat image.
+        landsat_cloud_mask_path (str): The path to the Landsat cloud mask image.
+        input_suffix (str, optional): The suffix of the planet images to be coregistered. Defaults to "*_TOAR_model_format.tif".
+        output_suffix (str, optional): The suffix to be added to the coregistered planet images. Defaults to "_TOAR_processed_coregistered.tif".
+        separator (str, optional): The separator used in the planet image filenames. Defaults to "_3B".
+        bad_mask_suffix (str, optional): The suffix of the bad mask image. Defaults to "udm2_clip_combined_mask.tif".
+        use_local (bool, optional): Flag indicating whether to use local files for coregistration. Defaults to True.
+        overwrite (bool, optional): Flag indicating whether to overwrite existing coregistered images. Defaults to False.
+        **kwargs: Additional keyword arguments to be passed to the coregister_tiff function.
+
+    Returns:
+        None
+    """
     defaults = {
         "max_shift": 2,
         "align_grids": True,
@@ -53,6 +72,7 @@ def coregister_directory(
             landsat_path,
             landsat_cloud_mask_path,
             output_suffix,
+            bad_mask_suffix,
             separator,
             use_local,
             overwrite,
@@ -61,22 +81,24 @@ def coregister_directory(
         if output_path:
             print(f"Coregistered planet image saved to: {output_path}")
         else:
-            print(f"Error processing {input_path}")
+            print(f" coregister_directory len1 Error processing {input_path}")
     for input_path in inputs_paths:
         output_path = coregister_tiff(
             input_path,
             landsat_path,
             landsat_cloud_mask_path,
             output_suffix,
+            bad_mask_suffix,
             separator,
             use_local,
             overwrite,
             **kwargs,
         )
+        print(f"output_path: {output_path}")
         if output_path:
             print(f"Coregistered planet image saved to: {output_path}")
         else:
-            print(f"Error processing {input_path}")
+            print(f" coregister_directory Error processing {input_path}")
 
 
 def coregister_tiff(
@@ -84,11 +106,13 @@ def coregister_tiff(
     landsat_path: str,
     landsat_cloud_mask_path: str,
     output_suffix: str = "_TOAR_processed_coregistered.tif",
+    bad_mask_suffix:str = "udm2_clip_combined_mask.tif",
     separator="_3B",
     use_local: bool = True,
     overwrite: bool = False,
     **kwargs,
 ):  # Fixed the kwargs syntax
+    print(f"bad_mask_suffix: {bad_mask_suffix}")
     print(f"input_path: {input_path}")
     parent_dir = os.path.dirname(input_path)
     print(f"Parent directory: {parent_dir}")
@@ -97,10 +121,10 @@ def coregister_tiff(
         return
     base_filename = get_base_filename(input_path, separator)
     target_cloud_mask_path = utils.get_file_path(
-        parent_dir, base_filename, regex="*udm2_clip_combined_mask.tif"
+        parent_dir, base_filename, regex=f"*{bad_mask_suffix}"
     )
     if not target_cloud_mask_path:
-        print(f"Could not find cloud mask for {input_path}")
+        print(f"Could not find cloud mask for {os.path.basename(input_path)}")
         return
     # make the output path
     output_path = os.path.join(parent_dir, f"{base_filename}{separator}{output_suffix}")
@@ -129,8 +153,11 @@ def coregister_tiff(
                 **kwargs,
             )
     except Exception as e:
-        print(f"Error processing {input_path}: {e}")
-        return
+        print(f"Error processing {e} : {input_path}")
+        if coregistered_target_path:
+            return coregistered_target_path
+        else:
+            return None
     print(f"Coregistered planet image saved to: {coregistered_target_path}")
 
 
@@ -195,6 +222,10 @@ def coregister_arosics_global(
         # remove this parameter because it is not used in the global coregistration
         del defaults["min_reliability"]
 
+    if "max_points" in kwargs:
+        # remove this parameter because it is not used in the global coregistration
+        del defaults["max_points"]
+
     CR = COREG(
         reference_path,
         target_path,
@@ -250,7 +281,7 @@ def coregister_arosics_local(
     "documentation at https://danschef.git-pages.gfz-potsdam.de/arosics/doc/arosics.html#module-arosics.CoReg_local"
 
     defaults = {
-        "max_shift": 5,
+        "max_shift": 2,
         "align_grids": True,
         "grid_res": 10,  # Grid points are 10 meters apart
         "v": True,  # verbose mode
@@ -266,7 +297,7 @@ def coregister_arosics_local(
 
     # Update the defaults with the user-provided kwargs
     defaults.update(kwargs)
-    print(defaults)
+    print(f"default: {defaults}")
     CR = COREG_LOCAL(
         reference_path,
         target_path,
@@ -276,3 +307,4 @@ def coregister_arosics_local(
         **defaults,
     )
     CR.correct_shifts()
+    return output_path
