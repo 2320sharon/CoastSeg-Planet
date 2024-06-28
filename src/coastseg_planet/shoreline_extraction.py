@@ -11,7 +11,7 @@ from coastseg_planet.processing import read_planet_tiff, get_georef, get_epsg_fr
 from coastseg_planet import processing 
 from coastsat import SDS_tools
 
-from coastseg.extracted_shoreline import load_image_labels, load_merged_image_labels, remove_small_objects_and_binarize, get_indices_of_classnames, get_class_mapping
+from coastseg.extracted_shoreline import  load_merged_image_labels, remove_small_objects_and_binarize, get_indices_of_classnames, get_class_mapping
 from coastseg import file_utilities
 
 import os
@@ -28,6 +28,24 @@ from skimage import transform
 from datetime import datetime
 
 from  coastsat.SDS_preprocess import rescale_image_intensity
+
+
+
+def load_image_labels(npz_file: str) -> np.ndarray:
+    """
+    Load in image labels from a .npz file. Loads in the "grey_label" array from the .npz file and returns it as a 2D
+
+    Parameters:
+    npz_file (str): The path to the .npz file containing the image labels.
+
+    Returns:
+    np.ndarray: A 2D numpy array containing the image labels from the .npz file.
+    """
+    if not os.path.isfile(npz_file) or not npz_file.endswith(".npz"):
+        raise ValueError(f"{npz_file} is not a valid .npz file.")
+
+    data = np.load(npz_file)
+    return data["grey_label"]
 
 def extract_contours(filtered_contours_long):
     """

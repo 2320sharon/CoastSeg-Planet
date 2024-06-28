@@ -50,6 +50,20 @@ CLASS_LABEL_COLORMAPS = [
         "#3399ff",
     ]
 
+def apply_model_to_dir(directory: str, suffix: str):
+    """
+    Apply a model to all images in a directory with a specific suffix.
+
+    Args:
+        directory (str): The directory path where the images are located.
+        suffix (str): The suffix of the images to be processed.
+
+    Returns:
+        None
+    """
+    for target_path in glob.glob(os.path.join(directory, f"*{suffix}.tif")):
+        apply_model_to_image(target_path, directory, False, False)
+
 
 def read_file_for_classification_model(file_path:str,length:int=128, width:int=128,bands:int=3)->np.ndarray:
     """
