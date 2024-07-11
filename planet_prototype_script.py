@@ -97,7 +97,7 @@ if CONVERT_TOAR:
     input_suffix='3B_TOAR.tif'
 else:
     input_suffix='_3B_AnalyticMS_toar_clip.tif'
-processing.convert_directory_to_model_format(planet_dir,input_suffix=input_suffix,output_suffix='_TOAR_model_format.tif',separator='_3B')
+processing.convert_directory_to_model_format(planet_dir,input_suffix=input_suffix,output_suffix='_TOAR_model_format.tif',separator='_3B',save_path=good_dir)
 
 # use a parameter to control if the good bad classification should run again
 if RUN_GOOD_BAD_CLASSIFER:

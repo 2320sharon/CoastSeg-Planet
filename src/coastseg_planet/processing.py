@@ -114,6 +114,7 @@ def convert_directory_to_model_format(
     crs: int = None,
     verbose: bool = False,
     number_of_bands: int = 3,
+    save_path: str = None,
 ):
     """
     Convert all files with a specific suffix in a directory to a specific TOAR model format.
@@ -128,6 +129,9 @@ def convert_directory_to_model_format(
     Returns:
         None
     """
+    if not os.path.exists(save_path):
+        os.makedirs(save_path, exist_ok=True)
+
     inputs_paths = glob.glob(os.path.join(directory, f"*{input_suffix}"))
     if len(inputs_paths) == 0:
         print(f"No files found with suffix {input_suffix} in {directory}")
@@ -137,8 +141,11 @@ def convert_directory_to_model_format(
         base_filename = get_base_filename(target_path, separator)
         # make the output path
         output_path = os.path.join(
-            directory, f"{base_filename}{separator}{output_suffix}"
+            save_path, f"{base_filename}{separator}{output_suffix}"
         )
+        # we want to make sure to repalce the original file
+        if os.path.exists(output_path):
+            os.remove(output_path)
         convert_planet_to_model_format(target_path, output_path,number_of_bands=number_of_bands, crs=crs)
         if verbose:
             print(f"Converting to model format and saving to {output_path}")
@@ -146,9 +153,12 @@ def convert_directory_to_model_format(
         # make the output path
         base_filename = get_base_filename(target_path, separator)
         output_path = os.path.join(
-            directory, f"{base_filename}{separator}{output_suffix}"
+            save_path, f"{base_filename}{separator}{output_suffix}"
         )
         try:
+            # we want to make sure to repalce the original file
+            if os.path.exists(output_path):
+                os.remove(output_path)
             convert_planet_to_model_format(target_path, output_path,number_of_bands=number_of_bands, crs=crs)
             if verbose:
                 print(f"Converting to model format and saving to {output_path}")
