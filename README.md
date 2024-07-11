@@ -5,8 +5,14 @@ The goal of this CoastSeg extension is to extract shorelines from Planet imagery
 
 Currently the team behind CoastSeg Planet is researching how to co-register Planet imagery to LandSat imagery as well as exploring tools that could be used.
 
+## Generic Workflow for Extracting Shorelines
+- Users will need to provide their own ROI and transects as geojson files in order to use CoastSeg Planet
+![CoastSeg Planet-Planet Extract Shorelines](https://github.com/2320sharon/CoastSeg-Planet/assets/61564689/166d06d1-d976-4343-83fd-18c7e9fa327f)
+
+
 ### Prototype Version 1 Diagram
 ![CoastSeg Planet-Current Prototyp drawio](https://github.com/2320sharon/CoastSeg-Planet/assets/61564689/cf6a4937-cd1c-49c9-ae37-269867aee030)
+
 
 # Research
 
