@@ -6,10 +6,10 @@ import concurrent.futures
 import datetime
 import glob
 import os
+import tqdm
 
 # Third party imports
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from arosics import COREG, COREG_LOCAL, DESHIFTER
 from osgeo import gdal, osr
 from skimage import img_as_ubyte
 from skimage.io import imsave
@@ -18,10 +18,73 @@ import numpy as np
 import rasterio
 import shapely.geometry as geometry
 import skimage.morphology as morphology
-
 import pyproj
-from rasterio.warp import calculate_default_transform, reproject, Resampling
 
+import os
+import rasterio
+import numpy as np
+import logging
+
+def create_elevation_mask_utm(tiff_file,  low_threshold, high_threshold):
+    masked_tif_path = create_elevation_mask(tiff_file,tiff_file.replace(".tif","_mask.tif"),low_threshold,high_threshold)
+    masked_projected_topobathy_tiff = reproject_to_utm(masked_tif_path, masked_tif_path.replace('.tif', '_utm.tif'))
+    return masked_projected_topobathy_tiff
+
+def get_mask_in_matching_projection(
+    source_tiff: str, mask_tiff: str
+) -> np.ndarray:
+    """
+    Reprojects the mask TIFF to match the resolution and grid of the source TIFF.
+    This returns the mask as a boolean numpy array.
+
+    Parameters:
+        source_tiff (str): The path to the source TIFF file.
+        mask_tiff (str): The path to the mask TIFF file.
+
+    Returns:
+        np.ndarray: The reprojected mask as a numpy array.
+
+    Raises:
+        FileNotFoundError: If the source or mask TIFF file is not found.
+        rasterio.errors.RasterioIOError: If there is an error opening or writing the TIFF files.
+    """
+    # open the source tiff to get its transform and resolution
+    with rasterio.open(source_tiff) as src:
+        source_transform = src.transform
+        source_crs = src.crs
+        source_shape = src.shape
+
+    # Reproject the mask in-memory to match the source TIFF
+    with rasterio.open(mask_tiff) as mask_src:
+        mask_data = mask_src.read(1)
+        reprojected_mask = np.empty(source_shape, dtype=mask_data.dtype)
+
+        reproject(
+            source=mask_data,
+            destination=reprojected_mask,
+            src_transform=mask_src.transform,
+            src_crs=mask_src.crs,
+            dst_transform=source_transform,
+            dst_crs=source_crs,
+            resampling=Resampling.nearest,
+        )
+
+        # Convert reprojected mask to boolean type as it is a mask
+        reprojected_mask = reprojected_mask.astype(bool)
+
+    return reprojected_mask
+
+def get_log_file_name(base_name="conversion.log"):
+    """Generate a new log file name with an incremented number if the base name already exists."""
+    if not os.path.exists(base_name):
+        return base_name
+    base, ext = os.path.splitext(base_name)
+    counter = 1
+    new_name = f"{base}_{counter}{ext}"
+    while os.path.exists(new_name):
+        counter += 1
+        new_name = f"{base}_{counter}{ext}"
+    return new_name
 
 def read_roi_from_config(filepath, roi_id: str = ""):
     gdf = gpd.read_file(filepath)
@@ -50,6 +113,7 @@ def convert_directory_to_model_format(
     separator="_3B",
     crs: int = None,
     verbose: bool = False,
+    number_of_bands: int = 3,
 ):
     """
     Convert all files with a specific suffix in a directory to a specific TOAR model format.
@@ -75,18 +139,22 @@ def convert_directory_to_model_format(
         output_path = os.path.join(
             directory, f"{base_filename}{separator}{output_suffix}"
         )
-        convert_planet_to_model_format(target_path, output_path, crs)
+        convert_planet_to_model_format(target_path, output_path,number_of_bands=number_of_bands, crs=crs)
         if verbose:
             print(f"Converting to model format and saving to {output_path}")
-    for target_path in inputs_paths:
+    for target_path in tqdm.tqdm(inputs_paths, desc="Converting files to model format"):
         # make the output path
         base_filename = get_base_filename(target_path, separator)
         output_path = os.path.join(
             directory, f"{base_filename}{separator}{output_suffix}"
         )
-        convert_planet_to_model_format(target_path, output_path, crs)
-        if verbose:
-            print(f"Converting to model format and saving to {output_path}")
+        try:
+            convert_planet_to_model_format(target_path, output_path,number_of_bands=number_of_bands, crs=crs)
+            if verbose:
+                print(f"Converting to model format and saving to {output_path}")
+        except Exception as e:
+            print(f"Error converting {target_path}: {e}")
+            continue
 
 
 def convert_file_to_toar(
@@ -226,6 +294,7 @@ def match_resolution_and_grid(
                     dst_crs=target_crs,
                     resampling=Resampling.nearest,
                 )
+        
 
     return output_tiff
 
@@ -287,13 +356,14 @@ def reproject_to_utm(input_tiff, output_tiff):
         return output_tiff
 
 
-def format_landsat_tiff(landsat_path: str) -> str:
+def format_landsat_tiff(landsat_path: str, output_dir:str="") -> str:
     """
     Formats a Landsat TIFF file by converting it from float to uint16, changing the blocksize to 256x256,
     creating a tiled raster, and converting it to a 3 band RGB ordered TIFF.
 
     Args:
         landsat_path (str): The file path of the Landsat TIFF file.
+        output_dir (str): The directory to save the formatted Landsat TIFF file.
 
     Returns:
         str: The file path of the formatted Landsat TIFF file.
@@ -306,6 +376,9 @@ def format_landsat_tiff(landsat_path: str) -> str:
     # create a tiled raster of the landsat image
     landsat_processed_path = create_tiled_raster(tmp_path, landsat_processed_path)
     output_path = landsat_processed_path.replace(".tif", "_model_format.tif")
+    # create the output path at the output directory if specified
+    if output_dir:
+         output_path = os.path.join(output_dir, os.path.basename(output_path))
     # convert the landsat to a 3 band RGB ordered tiff
     convert_landsat_to_model_format(landsat_processed_path, output_path)
     if os.path.exists(tmp_path):
@@ -644,6 +717,10 @@ def convert_landsat_to_model_format(input_file: str, output_file: str) -> None:
     Prints the min and max values of the original and normalized red, green, and blue bands,
     and the shape of the reordered bands array.
     """
+    # remove the output file if exists just in case it was corrupted (opening with rasterio will fail)
+    if os.path.exists(output_file):
+        os.remove(output_file)
+
     with rasterio.open(input_file) as src:
         # Read the bands
         band1 = src.read(1)  # blue
@@ -930,9 +1007,12 @@ def check_tiff_area(tiff_path, expected_area_km, threshold=0.8):
     Returns:
     - tuple: (tiff_path, bool, float) Path to the TIFF file, whether the area is above the threshold, and the area of the TIFF file in square kilometers.
     """
-    with rasterio.open(tiff_path) as src:
-        tiff_bounds = src.bounds
-
+    try:
+        with rasterio.open(tiff_path) as src:
+            tiff_bounds = src.bounds
+    except rasterio.errors.RasterioIOError:
+        print(f"Error reading {os.path.basename(tiff_path)}")
+        return tiff_path, False, 0
     tiff_area_m = calculate_area_from_bounds(tiff_bounds)
     tiff_area_km = square_meters_to_square_kilometers(tiff_area_m)
     expected_area_m = square_kilometers_to_square_meters(expected_area_km)
@@ -1068,6 +1148,8 @@ def create_tiled_raster(src_filepath, dst_filepath, block_size=256):
     Raises:
         None
     """
+
+
     # Open the source file
     with rasterio.open(src_filepath) as src:
         # Copy the profile from the source
@@ -1080,6 +1162,10 @@ def create_tiled_raster(src_filepath, dst_filepath, block_size=256):
             blockysize=block_size,
             compress="lzw",  # Optional: Add compression to reduce file size
         )
+
+        # remove the destination file if it already exists just in case it was corrupted
+        if os.path.exists(dst_filepath):
+            os.remove(dst_filepath)
 
         # Create a new file with the updated profile
         with rasterio.open(dst_filepath, "w", **profile) as dst:
@@ -1104,6 +1190,9 @@ def convert_from_float_to_unit16(input_path, output_path):
     Returns:
         str: The path to the output raster file.
     """
+    if os.path.exists(output_path):
+        os.remove(output_path)
+
     with rasterio.open(input_path) as input_raster:
         out_meta = input_raster.meta.copy()
         modified_data = np.empty(
@@ -1150,6 +1239,45 @@ def normalize_band(band: np.ndarray) -> np.ndarray:
 #     normalized_band = ((band - min_val) / (max_val - min_val)) * 255
 #     return normalized_band.astype(np.uint8)
 
+def reproject_raster(input_file: str,output_file:str, target_crs) -> None:
+    """Reproject a raster to a new CRS if it is not already in that CRS and replace the original file.
+    
+    Args:
+        input_file (str): The file path to the input raster file.
+        target_crs (dict or str): The target coordinate reference system.
+    """
+    with rasterio.open(input_file) as src:
+        if src.crs == target_crs:
+            print(f"The raster is already in the target CRS: {target_crs}")
+            return  output_file
+        else:
+            print(f"Reprojecting the raster to {target_crs}")
+            # Calculate the transform and dimensions for the new CRS
+            transform, width, height = calculate_default_transform(
+                src.crs, target_crs, src.width, src.height, *src.bounds
+            )
+            meta = src.meta.copy()
+            meta.update(
+                {"crs": target_crs, "transform": transform, "width": width, "height": height}
+            )
+
+            with rasterio.open(output_file, "w", **meta) as dst:
+                for i in range(1, src.count + 1):
+                    reproject(
+                        source=rasterio.band(src, i),
+                        destination=rasterio.band(dst, i),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=target_crs,
+                        resampling=Resampling.nearest,
+                    )
+    return output_file
+
+    # Replace the original file with the reprojected file
+
+    print(f"Reprojected raster saved as the original file: {input_file}")
+
 def reproject_raster_in_place(input_file: str, target_crs) -> None:
     """Reproject a raster to a new CRS if it is not already in that CRS and replace the original file.
     
@@ -1191,105 +1319,105 @@ def reproject_raster_in_place(input_file: str, target_crs) -> None:
     os.rename(temp_file, input_file)
     print(f"Reprojected raster saved as the original file: {input_file}")
 
-def convert_planet_to_model_format(
-    input_file: str, output_file: str, number_of_bands: int = 3, crs=None
-) -> None:
-    """Process the raster file by normalizing and reordering its bands, and save the output.
+# def convert_planet_to_model_format(
+#     input_file: str, output_file: str, number_of_bands: int = 3, crs=None
+# ) -> None:
+#     """Process the raster file by normalizing and reordering its bands, and save the output.
 
-    This is used for 4 band planet imagery that needs to be reordered to RGBN from BGRN for the zoo model.
+#     This is used for 4 band planet imagery that needs to be reordered to RGBN from BGRN for the zoo model.
 
-    Args:
-        input_file (str): The file path to the input raster file.
-        output_file (str): The file path to save the processed raster file.
-        number_of_bands (int): The number of bands to keep in the output.
-        crs (dict or str, optional): The target coordinate reference system.
+#     Args:
+#         input_file (str): The file path to the input raster file.
+#         output_file (str): The file path to save the processed raster file.
+#         number_of_bands (int): The number of bands to keep in the output.
+#         crs (dict or str, optional): The target coordinate reference system.
 
-    Reads the input raster file, normalizes its bands to the range [0, 255],
-    reorders the bands to RGB followed by the remaining bands, and saves the
-    processed raster to the specified output file.
+#     Reads the input raster file, normalizes its bands to the range [0, 255],
+#     reorders the bands to RGB followed by the remaining bands, and saves the
+#     processed raster to the specified output file.
 
-    The function assumes the input raster has at least three bands (blue, green, red)
-    and possibly additional bands.
+#     The function assumes the input raster has at least three bands (blue, green, red)
+#     and possibly additional bands.
 
-    Prints the min and max values of the original and normalized red, green, and blue bands,
-    and the shape of the reordered bands array.
-    """
-    temp_file = "reprojected_temp.tif"
+#     Prints the min and max values of the original and normalized red, green, and blue bands,
+#     and the shape of the reordered bands array.
+#     """
+#     temp_file = "reprojected_temp.tif"
 
-    if crs:
-        print(f"Reprojecting the raster to {crs}")
-        with rasterio.open(input_file) as src:
-            if src.crs == crs:
-                print(f"The raster is already in the target CRS: {crs}")
-                reprojected_file = input_file
-            else:
-                # Calculate the transform and dimensions for the new CRS
-                transform, width, height = calculate_default_transform(
-                    src.crs, crs, src.width, src.height, *src.bounds
-                )
-                meta = src.meta.copy()
-                meta.update(
-                    {"crs": crs, "transform": transform, "width": width, "height": height}
-                )
+#     if crs:
+#         print(f"Reprojecting the raster to {crs}")
+#         with rasterio.open(input_file) as src:
+#             if src.crs == crs:
+#                 print(f"The raster is already in the target CRS: {crs}")
+#                 reprojected_file = input_file
+#             else:
+#                 # Calculate the transform and dimensions for the new CRS
+#                 transform, width, height = calculate_default_transform(
+#                     src.crs, crs, src.width, src.height, *src.bounds
+#                 )
+#                 meta = src.meta.copy()
+#                 meta.update(
+#                     {"crs": crs, "transform": transform, "width": width, "height": height}
+#                 )
 
-                with rasterio.open(temp_file, "w", **meta) as dst:
-                    for i in range(1, src.count + 1):
-                        reproject(
-                            source=rasterio.band(src, i),
-                            destination=rasterio.band(dst, i),
-                            src_transform=src.transform,
-                            src_crs=src.crs,
-                            dst_transform=transform,
-                            dst_crs=crs,
-                            resampling=Resampling.nearest,
-                        )
+#                 with rasterio.open(temp_file, "w", **meta) as dst:
+#                     for i in range(1, src.count + 1):
+#                         reproject(
+#                             source=rasterio.band(src, i),
+#                             destination=rasterio.band(dst, i),
+#                             src_transform=src.transform,
+#                             src_crs=src.crs,
+#                             dst_transform=transform,
+#                             dst_crs=crs,
+#                             resampling=Resampling.nearest,
+#                         )
 
-            reprojected_file = temp_file
-    else:
-        reprojected_file = input_file
+#             reprojected_file = temp_file
+#     else:
+#         reprojected_file = input_file
 
-    with rasterio.open(reprojected_file) as src:
-        # Read the bands
-        band1 = src.read(1)  # blue
-        band2 = src.read(2)  # green
-        band3 = src.read(3)  # red
-        other_bands = [src.read(i) for i in range(4, src.count + 1)]
+#     with rasterio.open(reprojected_file) as src:
+#         # Read the bands
+#         band1 = src.read(1)  # blue
+#         band2 = src.read(2)  # green
+#         band3 = src.read(3)  # red
+#         other_bands = [src.read(i) for i in range(4, src.count + 1)]
 
-        # Normalize the bands
-        band1_normalized = normalize_band(band1)
-        band2_normalized = normalize_band(band2)
-        band3_normalized = normalize_band(band3)
-        other_bands_normalized = [normalize_band(band) for band in other_bands]
+#         # Normalize the bands
+#         band1_normalized = normalize_band(band1)
+#         band2_normalized = normalize_band(band2)
+#         band3_normalized = normalize_band(band3)
+#         other_bands_normalized = [normalize_band(band) for band in other_bands]
 
-        # Reorder the bands RGB and other bands
-        reordered_bands = np.dstack(
-            [band3_normalized, band2_normalized, band1_normalized]
-            + other_bands_normalized
-        )
-        reordered_bands = reordered_bands[:, :, :number_of_bands]
+#         # Reorder the bands RGB and other bands
+#         reordered_bands = np.dstack(
+#             [band3_normalized, band2_normalized, band1_normalized]
+#             + other_bands_normalized
+#         )
+#         reordered_bands = reordered_bands[:, :, :number_of_bands]
 
-        # Get the metadata
-        meta = src.meta.copy()
+#         # Get the metadata
+#         meta = src.meta.copy()
 
-        # Update the metadata to reflect the number of layers and data type
-        meta.update(
-            {
-                "count": reordered_bands.shape[2],
-                "dtype": reordered_bands.dtype,
-                "driver": "GTiff",
-            }
-        )
+#         # Update the metadata to reflect the number of layers and data type
+#         meta.update(
+#             {
+#                 "count": reordered_bands.shape[2],
+#                 "dtype": reordered_bands.dtype,
+#                 "driver": "GTiff",
+#             }
+#         )
 
-        # Save the image
-        with rasterio.open(output_file, "w", **meta) as dst:
-            for i in range(reordered_bands.shape[2]):
-                dst.write(reordered_bands[:, :, i], i + 1)
+#         # Save the image
+#         with rasterio.open(output_file, "w", **meta) as dst:
+#             for i in range(reordered_bands.shape[2]):
+#                 dst.write(reordered_bands[:, :, i], i + 1)
 
-    # Delete the temporary file if it was created
-    if crs and os.path.exists(temp_file):
-        os.remove(temp_file)
+#     # Delete the temporary file if it was created
+#     if crs and os.path.exists(temp_file):
+#         os.remove(temp_file)
 
-    return output_file
+#     return output_file
 
 
 # def convert_planet_to_model_format(input_file: str, output_file: str,number_of_bands:int=3) -> None:
@@ -1358,3 +1486,127 @@ def convert_planet_to_model_format(
 
 
 #     return output_file
+
+
+def convert_planet_to_model_format(
+    input_file: str, output_file: str, number_of_bands: int = 3, crs=None
+) -> None:
+    """Process the raster file by normalizing and reordering its bands, and save the output.
+
+    This is used for 4 band planet imagery that needs to be reordered to RGBN from BGRN for the zoo model.
+
+    Args:
+        input_file (str): The file path to the input raster file.
+        output_file (str): The file path to save the processed raster file.
+        number_of_bands (int): The number of bands to keep in the output.
+        crs (dict or str, optional): The target coordinate reference system.
+
+    Reads the input raster file, normalizes its bands to the range [0, 255],
+    reorders the bands to RGB followed by the remaining bands, and saves the
+    processed raster to the specified output file.
+
+    The function assumes the input raster has at least three bands (blue, green, red)
+    and possibly additional bands.
+
+    Prints the min and max values of the original and normalized red, green, and blue bands,
+    and the shape of the reordered bands array.
+    """
+    temp_file = "reprojected_temp.tif"
+    log_file = get_log_file_name("conversion.log")
+    logging.basicConfig(level=logging.DEBUG, filename=log_file, filemode='w',
+                        format='%(name)s - %(levelname)s - %(message)s')
+
+    try:
+        if crs:
+            logging.info(f"Reprojecting the raster to {crs}")
+            # just in case the temp file exists & is corrupted
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+
+            with rasterio.open(input_file) as src:
+                if src.crs == crs:
+                    logging.info(f"The raster is already in the target CRS: {crs}")
+                    reprojected_file = input_file
+                else:
+                    # Calculate the transform and dimensions for the new CRS
+                    transform, width, height = calculate_default_transform(
+                        src.crs, crs, src.width, src.height, *src.bounds
+                    )
+                    meta = src.meta.copy()
+                    meta.update(
+                        {"crs": crs, "transform": transform, "width": width, "height": height}
+                    )
+
+                    with rasterio.open(temp_file, "w", **meta) as dst:
+                        for i in range(1, src.count + 1):
+                            reproject(
+                                source=rasterio.band(src, i),
+                                destination=rasterio.band(dst, i),
+                                src_transform=src.transform,
+                                src_crs=src.crs,
+                                dst_transform=transform,
+                                dst_crs=crs,
+                                resampling=Resampling.nearest,
+                            )
+
+                    reprojected_file = temp_file
+        else:
+            reprojected_file = input_file
+
+        # this prevents issues if the output file already exists and is corrupted
+        if os.path.exists(output_file):
+            try:
+                os.remove(output_file)
+                logging.info(f"Existing output file {output_file} deleted.")
+            except Exception as e:
+                logging.error(f"Could not delete existing output file {output_file}: {e}")
+                raise e
+
+        with rasterio.open(reprojected_file) as src:
+            # Read the bands
+            band1 = src.read(1)  # blue
+            band2 = src.read(2)  # green
+            band3 = src.read(3)  # red
+            other_bands = [src.read(i) for i in range(4, src.count + 1)]
+
+            # Normalize the bands
+            band1_normalized = normalize_band(band1)
+            band2_normalized = normalize_band(band2)
+            band3_normalized = normalize_band(band3)
+            other_bands_normalized = [normalize_band(band) for band in other_bands]
+
+            # Reorder the bands RGB and other bands
+            reordered_bands = np.dstack(
+                [band3_normalized, band2_normalized, band1_normalized]
+                + other_bands_normalized
+            )
+            reordered_bands = reordered_bands[:, :, :number_of_bands]
+
+            # Get the metadata
+            meta = src.meta.copy()
+
+            # Update the metadata to reflect the number of layers and data type
+            meta.update(
+                {
+                    "count": reordered_bands.shape[2],
+                    "dtype": reordered_bands.dtype,
+                    "driver": "GTiff",
+                }
+            )
+
+
+
+            # Save the image
+            with rasterio.open(output_file, "w", **meta) as dst:
+                for i in range(reordered_bands.shape[2]):
+                    dst.write(reordered_bands[:, :, i], i + 1)
+
+        # Delete the temporary file if it was created
+        if crs and os.path.exists(temp_file):
+            os.remove(temp_file)
+
+        logging.info(f"Successfully converted {input_file} to {output_file}")
+
+    except Exception as e:
+        logging.error(f"Error processing file {input_file}: {e}", exc_info=True)
+        raise e

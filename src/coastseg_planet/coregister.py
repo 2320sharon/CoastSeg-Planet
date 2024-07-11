@@ -5,20 +5,67 @@ import numpy as np
 import glob
 import os
 from coastseg_planet.processing import get_base_filename
-from coastseg_planet import utils
-
+from coastseg_planet import utils, visualize
+from typing import Optional
 
 def get_cpus():
     num_cpus = os.cpu_count()
     print(f"Number of CPUs available: {num_cpus}")
     return num_cpus
 
+def generate_coreg_movie(
+    input_dir:str,
+    ref_path:str,
+    ref_mask:str,
+    base_movie_name:str,
+    output_suffix="_TOAR_processed_coregistered_global.tif",
+    bad_mask_suffix:str = "udm2_clip_combined_mask.tif",
+    use_local:bool=True,
+    overwrite:bool=False,
+    **kwargs,
+):
+    """
+    Generate a movie of coregistered TIFF files.
+
+    Args:
+        input_dir (str): The directory containing the TIFF files.
+        ref_path (str): The path to the reference image for coregistration.
+        ref_mask (str): The path to the reference mask for coregistration.
+        base_movie_name (str): The base name for the output movie file.
+        output_suffix (str, optional): The suffix to be added to the coregistered TIFF files. Defaults to "_TOAR_processed_coregistered_global.tif".
+        use_local (bool, optional): Flag indicating whether to use local coregistration. Defaults to True.
+        overwrite (bool, optional): Flag indicating whether to overwrite existing output movie file. Defaults to False.
+    """
+    coregister_directory(
+        input_dir,
+        ref_path,
+        ref_mask,
+        output_suffix=output_suffix,
+        bad_mask_suffix=bad_mask_suffix,
+        use_local=use_local,
+        overwrite=overwrite,
+        **kwargs,
+    )
+    # # make a movie of the coregistered tiffs
+    tiff_files = sorted(glob.glob(os.path.join(input_dir, f"*{output_suffix}")))
+    coreg_str = "local" if use_local else "global"
+    output_movie = os.path.join(input_dir, f"{base_movie_name}_{coreg_str}.mp4")
+    if os.path.exists(output_movie):
+        os.remove(output_movie)
+    visualize.create_movie_from_tiffs(tiff_files, output_movie)
+    # make a movie of the coregistered tiffs
+    # tiff_files = sorted(glob.glob(os.path.join(input_dir, f"*{output_suffix}")))
+    # coreg_str = "local" if use_local else "global"
+    # output_movie = os.path.join(input_dir, f"{base_movie_name}_{coreg_str}.mp4")
+    # if os.path.exists(output_movie):
+    #     os.remove(output_movie)
+    # visualize.create_movie_from_images(tiff_files, output_movie)
 
 def coregister_directory(
     directory: str,
     landsat_path: str,
     landsat_cloud_mask_path: str,
-    input_suffix: str = "_TOAR_model_format.tif",
+    input_suffix: str = "_AnalyticMS_toar_clip.tif",
     output_suffix: str = "_TOAR_processed_coregistered.tif",
     separator="_3B",
     bad_mask_suffix:str = "udm2_clip_combined_mask.tif",
@@ -60,7 +107,6 @@ def coregister_directory(
         "CPUs": get_cpus() / 2,
     }
     defaults.update(kwargs)
-
     inputs_paths = glob.glob(os.path.join(directory, f"*{separator}{input_suffix}"))
     if len(inputs_paths) == 0:
         print(f"No files found with suffix {input_suffix} in {directory}")
@@ -106,32 +152,53 @@ def coregister_tiff(
     landsat_path: str,
     landsat_cloud_mask_path: str,
     output_suffix: str = "_TOAR_processed_coregistered.tif",
-    bad_mask_suffix:str = "udm2_clip_combined_mask.tif",
-    separator="_3B",
+    bad_mask_suffix: str = "udm2_clip_combined_mask.tif",
+    separator: str = "_3B",
     use_local: bool = True,
     overwrite: bool = False,
     **kwargs,
-):  # Fixed the kwargs syntax
-    print(f"bad_mask_suffix: {bad_mask_suffix}")
-    print(f"input_path: {input_path}")
+) -> Optional[str]:
+    """
+    Coregisters a TIFF image using specified paths and parameters.
+
+    Parameters:
+    - input_path (str): Path to the input TIFF file.
+    - landsat_path (str): Path to the Landsat image for coregistration.
+    - landsat_cloud_mask_path (str): Path to the Landsat cloud mask.
+    - output_suffix (str, optional): Suffix for the output coregistered TIFF file. Default is "_TOAR_processed_coregistered.tif".
+    - bad_mask_suffix (str, optional): Suffix for the bad mask file. Default is "udm2_clip_combined_mask.tif".
+    - separator (str, optional): Separator used in file naming. Default is "_3B".
+    - use_local (bool, optional): Whether to use local coregistration. Default is True.
+    - overwrite (bool, optional): Whether to overwrite existing coregistered file. Default is False.
+    - **kwargs: Additional keyword arguments for coregistration functions.
+
+    Returns:
+    - Optional[str]: Path to the coregistered image or None if coregistration fails.
+    """
+    print(f"Input path {input_path}")
     parent_dir = os.path.dirname(input_path)
     print(f"Parent directory: {parent_dir}")
-    if os.path.exists(input_path) == False:
+    
+    if not os.path.exists(input_path):
         print(f"Could not find {input_path}")
-        return
+        return None
+    
     base_filename = get_base_filename(input_path, separator)
-    target_cloud_mask_path = utils.get_file_path(
-        parent_dir, base_filename, regex=f"*{bad_mask_suffix}"
-    )
+    target_cloud_mask_path = utils.get_file_path(parent_dir, base_filename, regex=f"*{bad_mask_suffix}")
+    
     if not target_cloud_mask_path:
         print(f"Could not find cloud mask for {os.path.basename(input_path)}")
-        return
-    # make the output path
+        return None
+    
+    # This is the location of the coregistered image
     output_path = os.path.join(parent_dir, f"{base_filename}{separator}{output_suffix}")
-    # return the output path if it already exists
+
+    # return the output path if it already exists and overwrite is not set
     if not overwrite and os.path.exists(output_path):
-        # os.remove(output_path)
         return output_path
+    
+    # otherwise, perform coregistration
+    coregistered_target_path = ""
     try:
         if use_local:
             coregistered_target_path = coregister_arosics_local(
@@ -274,12 +341,24 @@ def coregister_arosics_local(
     reference_cloud_mask: str,
     output_path: str,
     target_cloud_mask: str,
-    quiet_mode=False,
-    num_cpus: int = 1,
     **kwargs,
 ):
-    "documentation at https://danschef.git-pages.gfz-potsdam.de/arosics/doc/arosics.html#module-arosics.CoReg_local"
+    """
+    Coregisters a target image with a reference image using local coregistration.
 
+    Parameters:
+    - target_path (str): Path to the target image.
+    - reference_path (str): Path to the reference image.
+    - reference_cloud_mask (str): Path to the reference cloud mask.
+    - output_path (str): Path where the output coregistered image will be saved.
+    - target_cloud_mask (str): Path to the target cloud mask.
+    - **kwargs (Dict[str, Any]): Additional keyword arguments for coregistration options.
+
+    documentation at https://danschef.git-pages.gfz-potsdam.de/arosics/doc/arosics.html#module-arosics.CoReg_local
+    
+    Returns:
+    - str: Path to the output coregistered image.
+    """
     defaults = {
         "max_shift": 2,
         "align_grids": True,
@@ -290,7 +369,7 @@ def coregister_arosics_local(
         "progress": True,
         "out_crea_options": [
             "COMPRESS=LZW"
-        ],  # otherwise if will use deflate which will not work well with our model
+        ],  # by default deflate is used which does not work with the model
         "fmt_out": "GTIFF",
         "CPUs": get_cpus(),
     }
@@ -298,6 +377,7 @@ def coregister_arosics_local(
     # Update the defaults with the user-provided kwargs
     defaults.update(kwargs)
     print(f"default: {defaults}")
+    
     CR = COREG_LOCAL(
         reference_path,
         target_path,

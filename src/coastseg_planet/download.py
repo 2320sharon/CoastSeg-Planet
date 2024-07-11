@@ -22,6 +22,38 @@ from typing import Optional
 from typing import List
 from datetime import datetime
 from typing import Dict, Any
+import shutil
+
+
+def move_contents(main_folder,psscene_path, remove_path=False):
+    """Move all contents of the PSScene directory to the main folder."""
+    # Move all contents of PSScene to the main folder
+    for item in os.listdir(psscene_path):
+        item_path = os.path.join(psscene_path, item)
+        shutil.move(item_path, main_folder)
+    
+    # Optionally, remove the PSScene directory if it is now empty
+    if remove_path:
+        os.rmdir(psscene_path)
+
+def move_psscene_contents(main_folder, remove_subdirs=False):
+    """Use this function to move all the contents of the PSScene directory to the main folder.
+    This is because large planet orders are broken into smaller sub orders and stored in subdirectories."""
+    # Traverse the main folder to find all subdirectories
+    for subdir in os.listdir(main_folder):
+        subdir_path = os.path.join(main_folder, subdir)
+        if os.path.isdir(subdir_path):
+            if os.path.basename(subdir_path) == 'PSScene':
+                move_contents(main_folder,subdir_path, remove_subdirs)
+            # Check if PSScene directory exists within the subdirectory
+            psscene_path = os.path.join(subdir_path, 'PSScene')
+            if os.path.isdir(psscene_path):
+                move_contents(main_folder,psscene_path, remove_subdirs)
+                
+                # Optionally, remove the subdirectory if requested
+            if remove_subdirs:
+                if os.path.isdir(subdir_path):
+                    shutil.rmtree(subdir_path)
 
 def download_topobathy(
     site: str,

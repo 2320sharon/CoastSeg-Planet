@@ -4,6 +4,101 @@ import glob
 import pandas as pd
 import shutil
 from scipy.ndimage import zoom
+import geopandas as gpd
+from  coastseg_planet.processing import (get_tiffs_with_bad_area
+)
+
+def get_matching_files(planet_dir, patterns=set(["*AnalyticMS_clip.tif", "*3B_AnalyticMS_toar_clip.tif"])):
+    """
+    Get a list of matching files in the specified directory based on the given patterns.
+
+    Args:
+        planet_dir (str): The directory path where the files are located.
+        patterns (set, optional): A set of file patterns to match against. Defaults to {"*AnalyticMS_clip.tif", "*3B_AnalyticMS_toar_clip.tif"}.
+
+    Returns:
+        list: A list of matching file paths.
+    """
+    matching_files = []
+    for pattern in patterns:
+        tif_files = glob.glob(os.path.join(planet_dir, pattern))
+        matching_files.extend(tif_files)
+
+    return matching_files
+
+def filter_files_by_area(directory:str, threshold=0.90, roi_path="", expected_area_km=None, verbose=False):
+    """
+    Filters files in a directory based on their area.
+
+    Args:
+        directory (str): The directory path where the files are located.
+        threshold (float, optional): The threshold value for determining if a file's area is considered bad. Defaults to 0.90.
+        roi_path (str, optional): The path to the ROI GeoJSON file used to calculate the expected area. Defaults to "".
+        expected_area_km (float, optional): The expected area in square kilometers. If not provided, it will be calculated from the ROI GeoJSON file. Defaults to None.
+        verbose (bool, optional): If True, prints additional information during the filtering process. Defaults to False.
+
+    Returns:
+        None
+
+    Raises:
+        None
+
+    """
+    if expected_area_km is None:
+        if roi_path == "":
+            print("Please provide a path to the ROI GeoJSON file to filter the files by area.")
+            return
+        _, sq_km_area = calculate_area_in_sq_km(roi_path)
+    _, sq_km_area = calculate_area_in_sq_km(roi_path)
+    tif_files = get_matching_files(directory)
+    if not tif_files:
+        print(f"No matching files to sort found in the directory: {directory}")
+        return 
+    bad_tiff_paths = get_tiffs_with_bad_area(tif_files, sq_km_area, threshold, use_threads=True)
+    if verbose:
+        print(f"Moving {len(bad_tiff_paths)} bad tifs to a new folder called bad in the directory: {directory}")
+    # for each bad tiff move it a new folder called bad
+    bad_path = os.path.join(directory, "bad")
+    # I need to move the corresponding files to the bad folder (xml, udm tif, and json)
+    os.makedirs(bad_path, exist_ok=True)
+    for bad_tiff in bad_tiff_paths:
+        try:
+            im_name = os.path.basename(bad_tiff) 
+            file_identifier = '_'.join(im_name.split("_")[:4])
+            move_files(directory, bad_path, file_identifier, move=True)
+        except Exception as e:
+            print(f"Error moving {bad_tiff} to {bad_path}")
+            print(e)
+
+def calculate_area_in_sq_km(geojson_path:str)->tuple:
+    """
+    Calculates the total area in square kilometers from a GeoJSON file.
+
+    Args:
+        geojson_path (str): The path to the GeoJSON file.
+
+    Returns:
+        tuple: A tuple containing the total area in square meters and square kilometers.
+    """
+    # Load the GeoJSON file
+    gdf = gpd.read_file(geojson_path)
+
+    # Check the CRS of the GeoDataFrame
+    if not gdf.crs.is_projected:
+        # Reprojecting to UTM (automatic UTM zone selection based on ROI centroid)
+        gdf = gdf.to_crs(gdf.estimate_utm_crs())
+
+    # Calculate the area in square meters
+    gdf['area_sqm'] = gdf.geometry.area
+
+    # Calculate the area in square kilometers
+    gdf['area_sqkm'] = gdf['area_sqm'] / 1e6
+
+    # Sum the areas to get total area in sqm and sqkm
+    total_area_sqm = gdf['area_sqm'].sum()
+    total_area_sqkm = gdf['area_sqkm'].sum()
+
+    return total_area_sqm, total_area_sqkm
 
 def get_file_path(directory:str, base_filename:str, regex:str="*udm2_clip_combined_mask.tif"):
     """
@@ -37,7 +132,7 @@ def move_files(source_dir: str, output_dir: str, file_identifier: str, move: boo
     Returns:
         None
     """
-    for ext in ["*_metadata.json", "*_metadata_clip.xml", "*_udm*.tif"]:
+    for ext in ["*_metadata.json", "*_metadata_clip.xml", "*_udm*.tif","*.tif"]:
         files = glob.glob(os.path.join(source_dir, f"{file_identifier}{ext}"))
         if files:
             file_name = os.path.basename(files[0])
@@ -77,6 +172,9 @@ def sort_images(inference_df_path:str,
             output_image_path = os.path.join(bad_dir, im_name)
         if move_additional_files:
             move_files(os.path.dirname(input_image_path), os.path.dirname(output_image_path), file_identifier, move)
+
+        if not os.path.exists(input_image_path):
+            continue
         if move:
             shutil.move(input_image_path, output_image_path)
         else:

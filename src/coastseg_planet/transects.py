@@ -13,6 +13,7 @@ from shapely.geometry import LineString, MultiPoint, Point, Polygon
 import os
 import shapely
 from json import JSONEncoder
+import pandas as pd
 
 # Right now the function expects the extracted shorelines to be in this format
         # output[satname] = {
@@ -27,6 +28,90 @@ from json import JSONEncoder
 #
 # These are then merged by output = SDS_tools.merge_output(output)
 
+def intersect_transects(transects_path:str,shorelines_dict:dict,output_epsg:int,save_location:str):
+    """
+    Intersects transects with shorelines and saves the raw timeseries.
+
+    Parameters:
+    transects_path (str): The file path to the transects shapefile.
+    save_location (str): The directory where the raw timeseries will be saved.
+
+    Returns:
+    None
+    """
+    transects_gdf = gpd.read_file(transects_path)
+    transects_gdf.to_crs(output_epsg, inplace=True)
+    # if no id column in transetcs_gdf then create one
+    if "id" not in transects_gdf.columns:
+        transects_gdf["id"] = transects_gdf.index
+        transects_gdf["id"] = transects_gdf["id"].astype(str)
+    # turn the transects into a dictionary so that we can use it in the compute_intersection_QC function
+    transects_dict = get_transect_points_dict(transects_gdf)
+    # run compute_intersection_QC
+    intersections_dict = compute_intersection_QC(shorelines_dict, transects_dict)
+    # save the raw timeseries
+    save_raw_timesseries(shorelines_dict,intersections_dict, save_location,verbose=True)
+
+def convert_transect_ids_to_rows(df):
+    """
+    Reshapes the timeseries data so that transect IDs become rows.
+
+    Args:
+    - df (DataFrame): Input data with transect IDs as columns.
+
+    Returns:
+    - DataFrame: Reshaped data with transect IDs as rows.
+    """
+    reshaped_df = df.melt(
+        id_vars="dates", var_name="transect_id", value_name="cross_distance"
+    )
+    return reshaped_df.dropna()
+def get_cross_distance_df(
+    extracted_shorelines: dict, cross_distance_transects: dict
+) -> pd.DataFrame:
+    """
+    Creates a DataFrame from extracted shorelines and cross distance transects by
+    getting the dates from extracted shorelines and saving it to the as the intersection time for each extracted shoreline
+    for each transect
+
+    Parameters:
+    extracted_shorelines : dict
+        A dictionary containing the extracted shorelines. It must have a "dates" key with a list of dates.
+    cross_distance_transects : dict
+        A dictionary containing the transects and the cross distance where the extracted shorelines intersected it. The keys are transect names and the values are lists of cross distances.
+        eg.
+        {  'tranect 1': [1,2,3],
+            'tranect 2': [4,5,6],
+        }
+    Returns:
+    DataFrame
+        A DataFrame where each column is a transect from cross_distance_transects and the "dates" column from extracted_shorelines. Each row corresponds to a date and contains the cross distances for each transect on that date.
+    """
+    transects_csv = {}
+    # copy dates from extracted shoreline
+    transects_csv["dates"] = extracted_shorelines["dates"]
+    # add cross distances for each transect within the ROI
+    transects_csv = {**transects_csv, **cross_distance_transects}
+    return pd.DataFrame(transects_csv)
+
+
+def get_raw_timeseries(extracted_shorelines:dict, cross_distance_transects:dict):
+    cross_distance_df = get_cross_distance_df(
+        extracted_shorelines, cross_distance_transects
+    )
+    cross_distance_df.dropna(axis="columns", how="all", inplace=True)
+    # this converts it to format dates, transect_id, cross_distance as the columns
+    # timeseries_df = convert_transect_ids_to_rows(cross_distance_df)
+    # timeseries_df = timeseries_df.sort_values('dates')
+    return cross_distance_df
+
+
+def save_raw_timesseries(shorelines_dict,intersections_dict, save_location,verbose=True):
+    raw_timeseries= get_raw_timeseries(shorelines_dict,intersections_dict)
+    filepath = os.path.join(save_location, "raw_transect_time_series.csv")
+    raw_timeseries.to_csv(filepath, sep=",",index=False)
+    if verbose:
+        print(f"Raw timeseries saved to {filepath}")
 
 def get_cross_distance_df(
     extracted_shorelines: dict, cross_distance_transects: dict
