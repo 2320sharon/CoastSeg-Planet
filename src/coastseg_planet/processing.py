@@ -1200,7 +1200,7 @@ def convert_from_float_to_unit16(input_path, output_path):
     Returns:
         str: The path to the output raster file.
     """
-    if os.path.exists(output_path):
+    if os.path.isfile(output_path) and os.path.exists(output_path):
         os.remove(output_path)
 
     with rasterio.open(input_path) as input_raster:

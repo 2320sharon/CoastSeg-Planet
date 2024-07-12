@@ -132,7 +132,7 @@ def move_files(source_dir: str, output_dir: str, file_identifier: str, move: boo
     Returns:
         None
     """
-    for ext in ["*_metadata.json", "*_metadata_clip.xml", "*_udm*.tif","*.tif"]:
+    for ext in ["*_metadata.json", "*_metadata_clip.xml", "*_udm*.tif","*.tif","*.xml"]:
         files = glob.glob(os.path.join(source_dir, f"{file_identifier}{ext}"))
         if files:
             file_name = os.path.basename(files[0])
@@ -157,10 +157,8 @@ def sort_images(inference_df_path:str,
     good_dir = os.path.join(output_folder, 'good')
     dirs = [output_folder, bad_dir, good_dir]
     for d in dirs:
-        try:
-            os.mkdir(d)
-        except:
-            pass
+        os.makedirs(d, exist_ok=True)
+
     inference_df = pd.read_csv(inference_df_path)
     for i in range(len(inference_df)):
         input_image_path = inference_df['im_paths'].iloc[i]
@@ -170,11 +168,13 @@ def sort_images(inference_df_path:str,
             output_image_path = os.path.join(good_dir, im_name)
         else:
             output_image_path = os.path.join(bad_dir, im_name)
+
         if move_additional_files:
             move_files(os.path.dirname(input_image_path), os.path.dirname(output_image_path), file_identifier, move)
 
         if not os.path.exists(input_image_path):
             continue
+
         if move:
             shutil.move(input_image_path, output_image_path)
         else:

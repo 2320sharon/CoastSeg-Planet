@@ -247,6 +247,9 @@ async def download_order_by_name(
     continue_existing: bool = False,
     order_states: list = None,
     product_bundle: str = "ortho_analytic_4b",
+    clip:bool = True,
+    toar:bool = True,
+    coregister:bool = False,
     **kwargs,
 ):
     """
@@ -260,6 +263,10 @@ async def download_order_by_name(
         end_date (str, optional): The end date for the order. Defaults to an empty string.
         overwrite (bool, optional): Whether to overwrite an existing order with the same name. Defaults to False.
         order_states (list, optional): The list of states of the order. Defaults to ['success'].
+        product_bundle (str, optional): The product bundle to download. Defaults to "ortho_analytic_4b".
+        clip (bool, optional): Whether to clip the images to the ROI. Defaults to True.
+        toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
+        coregister (bool, optional): Whether to coregister the images. Defaults to False.
     kwargs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
     
@@ -296,8 +303,9 @@ async def download_order_by_name(
                 )
             if roi == {}:
                 raise ValueError("roi must be specified to create a new order")
+            print(f"download order by name coregister: {coregister}")
             await make_order_and_download(
-                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,**kwargs
+                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister, **kwargs
             )
 
 
@@ -320,6 +328,26 @@ def get_ids(items):
     # flattens the nested list into a single list ex. [[1,2],[3,4]] -> [1,2,3,4]
     ids = [j for id in ids for j in id]
     return ids
+
+def get_image_id_with_lowest_cloud_cover(items):
+    # Ensure the list is not empty
+    print(f"items: {items}")
+    if not items:
+        return None
+
+    # Initialize the variables to store the minimum cloud cover and corresponding image ID
+    min_cloud_cover = float('inf')
+    image_id_with_lowest_cloud_cover = None
+
+    # Iterate over the items to find the minimum cloud cover
+    for item in items:
+        if 'properties' in item and 'cloud_cover' in item['properties'] and 'id' in item:
+            cloud_cover = item['properties']['cloud_cover']
+            if cloud_cover < min_cloud_cover:
+                min_cloud_cover = cloud_cover
+                image_id_with_lowest_cloud_cover = item['id']
+    return image_id_with_lowest_cloud_cover
+        
 
 
 def create_combined_filter(roi: str, time1: str, time2: str, cloud_cover: float = 0.99,product_bundles="basic_analytic_4b") -> Dict[str, Any]:
@@ -531,7 +559,7 @@ def get_tools(
     roi_path: str = "",
     clip: bool = True,
     toar: bool = True,
-    coregister=False,
+    coregister:bool =False,
     id_to_coregister: str = "",
 ):
     """
@@ -708,12 +736,16 @@ async def make_order_and_download(
         # get the ids of the items group by acquired date
         ids = get_ids(item_list)
         print(f"Requesting {len(ids)} items")
-
+        id_to_coregister = ids[0]
+        if coregister:
+            id_to_coregister = get_image_id_with_lowest_cloud_cover(item_list)
         # create a client for the orders API
         cl = sess.client("orders")
 
         # get the tools to be applied to the order
-        tools = get_tools(roi, clip, toar, coregister, ids[0])
+        tools = get_tools(roi, clip, toar, coregister, id_to_coregister)
+        print(f"tools: {tools}")
+        print(f"id_to_coregister: {id_to_coregister}")
         # Process orders in batches
         await process_orders_in_batches(cl, ids, tools, download_path, order_name,product_bundle=product_bundle)
 

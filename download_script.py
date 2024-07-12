@@ -4,20 +4,24 @@ import os
 import asyncio
 import json
 
-# 1. name the order
-# Either enter the name of an existing order or create a new one
-# order_name = 'santa_cruz_boardwalk_TOAR_enabled4'
-order_name = "Ak_spit_TOAR_enabled_analytic_udm2_full_dataset_cloud_cover_60"
+# 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
+CLOUD_COVER = 0.80
 
-# 2. insert path to roi geojson
+
+# 1. Select a start and end date YYYY-MM-DD
+start_date = "2022-04-01"
+end_date = "2024-04-01"
+
+
+# 2. name the order
+# Either enter the name of an existing order or create a new one
+order_name = f"DUCK_NC_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}"
+
+# 3. insert path to roi geojson
 # roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\boardwalk\roi.geojson"
-roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\AK_spit.geojson"
+roi_path = r"C:\development\coastseg-planet\roi_uyw10.geojson"
 with open(roi_path, "r") as file:
     roi = json.load(file)
-
-# 3. Select a start and end date YYYY-MM-DD
-start_date = "2013-04-01"
-end_date = "2024-04-01"
 
 # 4. read the api key from the config file and set it in the environment
 # if one doesnt exist, create a config file with the following format
@@ -45,8 +49,9 @@ asyncio.run(
         end_date,
         overwrite=False,
         continue_existing=False,
-        cloud_cover=0.60,
+        cloud_cover=CLOUD_COVER,
         product_bundle="analytic_udm2",
+        coregister=True,
     )
 )
 
