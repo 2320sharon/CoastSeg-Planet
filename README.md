@@ -52,3 +52,10 @@ pip install -e .
 pip install tensorflow==2.15
 pip install transformers
 ```
+
+# Step 1: Download Imagery
+## 1. Get your planet API key
+## 2. Add it to the config.ini file
+## 3. Activate the environment
+## 4. Run the Script `download_script.py`
+
