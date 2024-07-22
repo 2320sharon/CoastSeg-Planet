@@ -71,8 +71,9 @@ Then edit this file to select:
 - date range
 - order name
 - max cloud cover
-
+Save the changes, then run the script when you are ready.
 ```
 conda activate coastseg_planet
 cd <location you installed coastseg-planet>
+python download_script.py
 ```
