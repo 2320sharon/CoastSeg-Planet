@@ -99,5 +99,21 @@ asyncio.run(
 )
 ```
 
+In the screenshot below you can see the orders created on the Planet dashboard. You can also download orders from here and check their status.
+
 ![image](https://github.com/user-attachments/assets/3bb06930-9c9c-4d18-9096-02b6b1cdc637)
+
+# Extract Shorelines From a Planet Order
+## Phase 1 : Prepare the Data
+### 1. Move all the suborder to a single folder (only for large orders)
+- If you had a large order `CoastSeg Planet` automatically will split your order into sub orders and place them each in their own folder under your order.
+- Move all the files from the subfolders into one directory
+
+| Small Order | Large Order |
+|-------------|-------------|
+| ![Small Order](https://github.com/user-attachments/assets/81e10727-4637-465a-b54e-42ccb92d9af0) | ![Large Order](https://github.com/user-attachments/assets/51a70d8c-dadd-42e5-a271-e302b41753fb) |
+| No need to move files | Move all the tif, json, xml files to a single directory |
+
+
+
 
