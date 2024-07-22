@@ -77,3 +77,27 @@ conda activate coastseg_planet
 cd <location you installed coastseg-planet>
 python download_script.py
 ```
+### 5. Wait for your order to finish
+The planet API prepares your order after you request it. If you realize that you made the wrong order and it hasn't finished on Planet yet, you can cancel the order with the `cancel_order.py` script. However if your order was submitted and is being prepared this script won't work. 
+#### Important - What to do for large orders
+It can take anywhere from 10 minutes to a few hours for planet to finish your order. During this time the script will show a status of "Running". If it takes too long for Planet to prepare the order the script will eventually quit because the Planet API took too long to finish your order. If that happens change `continue_existing` in `download.download_order_by_name`  to be `continue_existing=True`. This tells the Planet API you want to get your existing order, NOT start a new order with the same name
+
+```
+asyncio.run(
+    download.download_order_by_name(
+        order_name,
+        output_path,
+        roi,
+        start_date,
+        end_date,
+        overwrite=False,            # if True will overwrite an existing order with the same name and download the new one
+        continue_existing=True,    # CHANGE THIS LINE
+        cloud_cover=CLOUD_COVER,
+        product_bundle="analytic_udm2",
+        coregister=False,           # if True will coregister the images to the image with the lowest cloud cover using Planet's coregistration service
+    )
+)
+```
+
+![image](https://github.com/user-attachments/assets/3bb06930-9c9c-4d18-9096-02b6b1cdc637)
+
