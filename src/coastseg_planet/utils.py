@@ -132,15 +132,19 @@ def move_files(source_dir: str, output_dir: str, file_identifier: str, move: boo
     Returns:
         None
     """
-    for ext in ["*_metadata.json", "*_metadata_clip.xml", "*_udm*.tif","*.tif","*.xml"]:
-        files = glob.glob(os.path.join(source_dir, f"{file_identifier}{ext}"))
-        if files:
-            file_name = os.path.basename(files[0])
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    for ext in ["*_metadata.json", "*_metadata_clip.xml", "*_udm*.tif", "*.tif", "*.xml"]:
+        pattern = os.path.join(source_dir, f"{file_identifier}{ext}")
+        files = glob.glob(pattern)
+        for file in files:
+            file_name = os.path.basename(file)
             output_path = os.path.join(output_dir, file_name)
             if move:
-                shutil.move(files[0], output_path)
+                shutil.move(file, output_path)
             else:
-                shutil.copyfile(files[0], output_path)
+                shutil.copyfile(file, output_path)
 
 def sort_images(inference_df_path:str,
                 output_folder:str,
@@ -159,6 +163,7 @@ def sort_images(inference_df_path:str,
     for d in dirs:
         os.makedirs(d, exist_ok=True)
 
+    print(f"inference_df_path : {inference_df_path}")
     inference_df = pd.read_csv(inference_df_path)
     for i in range(len(inference_df)):
         input_image_path = inference_df['im_paths'].iloc[i]

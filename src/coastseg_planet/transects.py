@@ -39,6 +39,10 @@ def intersect_transects(transects_path:str,shorelines_dict:dict,output_epsg:int,
     Returns:
     None
     """
+    if shorelines_dict == {} or shorelines_dict.get("shorelines",[]) == []:
+        raise ValueError("No shorelines found. Please provide a dictionary containing the extracted shorelines.")
+    
+
     transects_gdf = gpd.read_file(transects_path)
     transects_gdf.to_crs(output_epsg, inplace=True)
     # if no id column in transetcs_gdf then create one

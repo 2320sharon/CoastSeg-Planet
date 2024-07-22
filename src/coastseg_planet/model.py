@@ -253,6 +253,7 @@ def run_classification_model(path_to_model: str,
     df = pd.DataFrame({'im_paths': im_paths,
                        'im_classes': im_classes,
                        'im_scores': im_scores})
+    
     if existing_csv and os.path.exists(existing_csv):
         existing_df = pd.read_csv(existing_csv)
         df = pd.concat([existing_df, df]).drop_duplicates(subset='im_paths').reset_index(drop=True)
@@ -260,7 +261,7 @@ def run_classification_model(path_to_model: str,
     print(f"Final results saved to {csv_path}.")
     
     # Sort the images based on classification
-    sort_images(csv_path, output_folder, move=move_files)
+    sort_images(csv_path, output_folder, move=move_files,move_additional_files=True)
     
     return csv_path
 

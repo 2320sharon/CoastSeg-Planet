@@ -114,7 +114,7 @@ def convert_directory_to_model_format(
     crs: int = None,
     verbose: bool = False,
     number_of_bands: int = 3,
-    save_path: str = None,
+    save_path: str = '',
 ):
     """
     Convert all files with a specific suffix in a directory to a specific TOAR model format.
@@ -125,10 +125,15 @@ def convert_directory_to_model_format(
         output_suffix (str, optional): The suffix of the output files in the TOAR model format. Defaults to '_TOAR_model_format.tif'.
         crs (int, optional): The coordinate reference system to use for the output files. Defaults to None.
         separator (str, optional): The separator used in the filenames. Defaults to '_3B'.
+        save_path (str, optional): The directory path to save the output files. Defaults to ''.
+        verbose (bool, optional): If True, print the conversion process. Defaults to False.
+        number_of_bands (int, optional): The number of bands in the output file. Defaults to 3.
 
     Returns:
         None
     """
+    if save_path == '':
+        save_path = directory
     if not os.path.exists(save_path):
         os.makedirs(save_path, exist_ok=True)
 
@@ -136,30 +141,15 @@ def convert_directory_to_model_format(
     if len(inputs_paths) == 0:
         print(f"No files found with suffix {input_suffix} in {directory}")
         return
-    if len(inputs_paths) == 1:
-        target_path = inputs_paths[0]
-        base_filename = get_base_filename(target_path, separator)
-        # make the output path
-        output_path = os.path.join(
-            save_path, f"{base_filename}{separator}{output_suffix}"
-        )
-        # we want to make sure to repalce the original file
-        if os.path.exists(output_path):
-            os.remove(output_path)
-        convert_planet_to_model_format(target_path, output_path,number_of_bands=number_of_bands, crs=crs)
-        if verbose:
-            print(f"Converting to model format and saving to {output_path}")
+    
     for target_path in tqdm.tqdm(inputs_paths, desc="Converting files to model format"):
-        # make the output path
         base_filename = get_base_filename(target_path, separator)
-        output_path = os.path.join(
-            save_path, f"{base_filename}{separator}{output_suffix}"
-        )
+        output_path = os.path.join(save_path, f"{base_filename}{separator}{output_suffix}")
+        
         try:
-            # we want to make sure to repalce the original file
             if os.path.exists(output_path):
                 os.remove(output_path)
-            convert_planet_to_model_format(target_path, output_path,number_of_bands=number_of_bands, crs=crs)
+            convert_planet_to_model_format(target_path, output_path, number_of_bands=number_of_bands, crs=crs)
             if verbose:
                 print(f"Converting to model format and saving to {output_path}")
         except Exception as e:
@@ -1564,6 +1554,7 @@ def convert_planet_to_model_format(
             reprojected_file = input_file
 
         # this prevents issues if the output file already exists and is corrupted
+        print(f"output file: {output_file}")
         if os.path.exists(output_file):
             try:
                 os.remove(output_file)

@@ -1,39 +1,46 @@
-import numpy as np
-import rasterio
-import pandas as pd
-import skimage.measure as measure
-import geopandas as gpd
-import glob
-from typing import List
-from shapely.geometry import LineString
-
-from coastseg_planet.plotting import create_overlay, create_legend, plot_image_with_legend, save_detection_figure, create_class_color_mapping
-from coastseg_planet.processing import read_planet_tiff, get_georef, get_epsg_from_tiff, create_gdf_from_shoreline
-from coastseg_planet import processing 
-from coastseg_planet import model
-from coastseg_planet import transects
-from coastseg_planet import utils
-from coastsat import SDS_tools
-
-from coastseg.extracted_shoreline import  load_merged_image_labels, remove_small_objects_and_binarize, get_indices_of_classnames, get_class_mapping
-from coastseg import file_utilities
-
+# Standard library imports
 import os
+import glob
+from datetime import datetime
+from typing import List
+
+# Third-party library imports
+import numpy as np
+import pandas as pd
+import rasterio
+import geopandas as gpd
 import matplotlib.pyplot as plt
-from matplotlib import patches, lines
-import colorsys
 import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
-import matplotlib.gridspec as gridspec
-
+from tqdm import tqdm
+from skimage import transform
+import skimage.measure as measure
+import skimage.morphology as morphology
 from scipy.spatial import KDTree
 from shapely.geometry import LineString
-from skimage import transform
-from datetime import datetime
-import skimage.morphology as morphology
+
+# Local module imports
+from coastseg_planet import processing, model, utils
+from coastseg_planet.plotting import (
+    create_legend,
+    plot_image_with_legend,
+    save_detection_figure,
+    create_class_color_mapping
+)
+from coastseg_planet.processing import (
+    read_planet_tiff,
+    get_georef,
+    get_epsg_from_tiff,
+)
+from coastseg.extracted_shoreline import (
+    load_merged_image_labels,
+    remove_small_objects_and_binarize,
+    get_indices_of_classnames,
+    get_class_mapping
+)
+from coastsat import SDS_tools
 
 
-from  coastsat.SDS_preprocess import rescale_image_intensity
 
 
 def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_crs=None):
@@ -247,24 +254,7 @@ def convert_world2pix(
         raise ValueError("Invalid input type")
     return points_converted
 
-# def extract_shorelines():
-#     npz_file = r'C:\development\coastseg-planet\20230412_094432_88_2439_3B_coregistered_model_ready_res.npz'
-#     model_card_path = r'C:\development\coastseg-planet\CoastSeg-Planet\output_zoo\coastseg_planet\coastseg_planet\config\model_card.yml'
 
-#     weights_directory = r'C:\development\doodleverse\coastseg\CoastSeg\src\coastseg\downloaded_models\segformer_RGB_4class_8190958'
-
-#     model_card_path = file_utilities.find_file_by_regex(
-#         weights_directory, r".*modelcard\.json$"
-#     )
-#     settings = {
-#     'output_epsg': 32631,
-#     'min_length_sl': 100,
-#     'dist_clouds': 50,
-#     }
-#     get_shorelines_from_model(model_card_path,npz_file)
-    
-    
-    
 def get_class_indices_from_model_card(npz_file,model_card_path):
     # get the water index from the model card
     water_classes_indices = get_indices_of_classnames(
@@ -293,12 +283,12 @@ def extract_shorelines_with_reference_shoreline(directory:str,
         return {}                 
                        
     all_extracted_shorelines = []
-    for target_path in filtered_tiffs:
+    for target_path in tqdm(filtered_tiffs, desc="Extracting Shorelines"):
         base_filename = processing.get_base_filename(target_path, separator)
         # get the processed coregistered file, the cloud mask and the npz file
         cloud_mask_path = utils.get_file_path(directory, base_filename, f"*{cloud_mask_suffix}")
         if not cloud_mask_path:
-            print(f"Skipping {cloud_mask_path} because cloud mask not found")
+            print(f"Skipping {os.path.basename(target_path)} because cloud mask with {cloud_mask_suffix} not found")
             continue
         # get the date from the path
         date=processing.get_date_from_path(base_filename)
@@ -324,6 +314,10 @@ def extract_shorelines_with_reference_shoreline(directory:str,
         all_extracted_shorelines.append(shoreline_gdf)
 
     # put all the shorelines into a single geodataframe
+    if len(all_extracted_shorelines) == 0:
+        print(f"No shorelines extracted from {directory}. Double check the settings and the files in the directory.")
+        return {'shorelines':[],'dates':[]}
+
     shorelines_gdf = concat_and_sort_geodataframes(all_extracted_shorelines, "date")
 
     # save the geodataframe to a geojson file
@@ -350,9 +344,9 @@ def extract_shorelines(directory:str,
                        
     # if length is 1 then call a single function to do all this stuff
     all_extracted_shorelines = []
-    # for target_path in filtered_tiffs:
-    for target_path in (
-            glob.glob(os.path.join(directory, f"*{suffix}.tif"))
+    for target_path in tqdm(
+            glob.glob(os.path.join(directory, f"*{suffix}.tif")),
+            desc="extracting shorelines"
         ):
 
         if not os.path.exists(target_path):
