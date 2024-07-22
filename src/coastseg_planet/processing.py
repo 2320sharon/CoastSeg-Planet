@@ -758,9 +758,9 @@ def convert_landsat_to_model_format(input_file: str, output_file: str) -> None:
         # Get the metadata
         meta = src.meta.copy()
 
-        print(
-            f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}, count: {reordered_bands.shape[2]}"
-        )
+        # print(
+        #     f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}, count: {reordered_bands.shape[2]}"
+        # )
         # Update the metadata to reflect the number of layers and data type
         meta.update(
             {
@@ -770,7 +770,7 @@ def convert_landsat_to_model_format(input_file: str, output_file: str) -> None:
             }
         )
         # make a numpy array that can be saved as a jpg
-        convert_tiff_to_jpg(reordered_bands, input_file)
+        # convert_tiff_to_jpg(reordered_bands, input_file)
 
         # Save the image
         with rasterio.open(output_file, "w", **meta) as dst:

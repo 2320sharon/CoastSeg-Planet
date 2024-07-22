@@ -675,41 +675,6 @@ def save_transects(
     save_path = os.path.join(save_location, "transects_cross_distances.json")
     to_file(cross_distance_transects, save_path)
 
-def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_crs=None):
-    """
-    Convert a GeoDataFrame containing shorelines into a dictionary with dates and shorelines.
-
-    Parameters:
-    shoreline_gdf (GeoDataFrame): The input GeoDataFrame with shoreline data.
-    date_format (str): The format string for converting dates to strings. Default is "%d-%m-%Y".
-    output_crs (str or dict, optional): The target CRS to convert the coordinates to. If None, no conversion is performed.
-
-    Returns:
-    dict: A dictionary with keys 'dates' and 'shorelines', where 'dates' is a list of date strings and 'shorelines' is a list of numpy arrays of coordinates.
-    """
-    shorelines = []
-    dates = []
-
-    if output_crs is not None:
-        shoreline_gdf = shoreline_gdf.to_crs(output_crs)
-
-    for idx, row in shoreline_gdf.iterrows():
-        date_str = row.date.strftime(date_format)
-        geometry = row.geometry
-        if geometry is not None:
-            if isinstance(geometry, MultiLineString):
-                for line in geometry.geoms:
-                    shorelines_array = np.array(line.coords)
-                    shorelines.append(shorelines_array)
-                    dates.append(date_str)
-            else:
-                shorelines_array = np.array(geometry.coords)
-                shorelines.append(shorelines_array)
-                dates.append(date_str)
-
-    shorelines_dict = {'dates': dates, 'shorelines': shorelines}
-    return shorelines_dict
-
 # this is an optimized version of the function this 65% faster than the original
 def compute_intersection_QC(output, 
                             transects,

@@ -30,10 +30,153 @@ from scipy.spatial import KDTree
 from shapely.geometry import LineString
 from skimage import transform
 from datetime import datetime
+import skimage.morphology as morphology
+
 
 from  coastsat.SDS_preprocess import rescale_image_intensity
 
 
+def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_crs=None):
+    """
+    Convert a GeoDataFrame containing shorelines into a dictionary with dates and shorelines.
+
+    Parameters:
+    shoreline_gdf (GeoDataFrame): The input GeoDataFrame with shoreline data.
+    date_format (str): The format string for converting dates to strings. Default is "%d-%m-%Y".
+    output_crs (str or dict, optional): The target CRS to convert the coordinates to. If None, no conversion is performed.
+
+    Returns:
+    dict: A dictionary with keys 'dates' and 'shorelines', where 'dates' is a list of date strings and 'shorelines' is a list of numpy arrays of coordinates.
+    """
+    shorelines = []
+    dates = []
+
+    if output_crs is not None:
+        shoreline_gdf = shoreline_gdf.to_crs(output_crs)
+
+    for idx, row in shoreline_gdf.iterrows():
+        date_str = row.date.strftime(date_format)
+        geometry = row.geometry
+        if geometry is not None:
+            if isinstance(geometry, MultiLineString):
+                for line in geometry.geoms:
+                    shorelines_array = np.array(line.coords)
+                    shorelines.append(shorelines_array)
+                    dates.append(date_str)
+            else:
+                shorelines_array = np.array(geometry.coords)
+                shorelines.append(shorelines_array)
+                dates.append(date_str)
+
+    shorelines_dict = {'dates': dates, 'shorelines': shorelines}
+    return shorelines_dict
+
+def create_shoreline_buffer(im_shape, georef, image_epsg, pixel_size, ref_sl,settings):
+    """
+    Creates a buffer around the reference shoreline. The size of the buffer is
+    given by settings['max_dist_ref'].
+
+    KV WRL 2018
+
+    Arguments:
+    -----------
+    im_shape: np.array
+        size of the image (rows,columns)
+    georef: np.array
+        vector of 6 elements [Xtr, Xscale, Xshear, Ytr, Yshear, Yscale]
+    image_epsg: int
+        spatial reference system of the image from which the contours were extracted
+    pixel_size: int
+        size of the pixel in metres (15 for Landsat, 10 for Sentinel-2)
+    ref_sl : np.array
+        lat,lon,mean sea level coordinates of the reference shoreline
+        ex. np.array([[lat,lon,0],[lat,lon,0]...])
+    settings: dict with the following keys
+        'output_epsg': int
+            output spatial reference system
+        'reference_shoreline': np.array
+            coordinates of the reference shoreline
+        'max_dist_ref': int
+            maximum distance from the reference shoreline in metres
+
+    Returns:
+    -----------
+    im_buffer: np.array
+        binary image, True where the buffer is, False otherwise
+
+    """
+    # initialise the image buffer
+    im_buffer = np.ones(im_shape).astype(bool)
+    # convert reference shoreline to pixel coordinates
+    ref_sl_conv = SDS_tools.convert_epsg(
+        ref_sl, settings["output_epsg"], image_epsg
+    )[:, :-1]
+    ref_sl_pix = SDS_tools.convert_world2pix(ref_sl_conv, georef)
+    ref_sl_pix_rounded = np.round(ref_sl_pix).astype(int)
+    # make sure that the pixel coordinates of the reference shoreline are inside the image
+    idx_row = np.logical_and(
+        ref_sl_pix_rounded[:, 0] > 0, ref_sl_pix_rounded[:, 0] < im_shape[1]
+    )
+    idx_col = np.logical_and(
+        ref_sl_pix_rounded[:, 1] > 0, ref_sl_pix_rounded[:, 1] < im_shape[0]
+    )
+    idx_inside = np.logical_and(idx_row, idx_col)
+    ref_sl_pix_rounded = ref_sl_pix_rounded[idx_inside, :]
+    # create binary image of the reference shoreline (1 where the shoreline is 0 otherwise)
+    im_binary = np.zeros(im_shape)
+    for j in range(len(ref_sl_pix_rounded)):
+        im_binary[ref_sl_pix_rounded[j, 1], ref_sl_pix_rounded[j, 0]] = 1
+    im_binary = im_binary.astype(bool)
+    # dilate the binary image to create a buffer around the reference shoreline
+    max_dist_ref_pixels = np.ceil(settings["max_dist_ref"] / pixel_size)
+    se = morphology.disk(max_dist_ref_pixels)
+    im_buffer = morphology.binary_dilation(im_binary, se)
+
+    return im_buffer
+
+def make_coastsat_compatible(feature: gpd.geodataframe) -> list:
+    """Return the feature as an np.array in the form:
+        [([lat,lon],[lat,lon],[lat,lon]),([lat,lon],[lat,lon],[lat,lon])...])
+    Args:
+        feature (gpd.geodataframe): clipped portion of shoreline within a roi
+    Returns:
+        list: shorelines in form:
+            [([lat,lon],[lat,lon],[lat,lon]),([lat,lon],[lat,lon],[lat,lon])...])
+    """
+    features = []
+    # Use explode to break multilinestrings in linestrings
+    feature_exploded = feature.explode(index_parts=True)
+    # For each linestring portion of feature convert to lat,lon tuples
+    lat_lng = feature_exploded.apply(
+        lambda row: tuple(np.array(row.geometry.coords).tolist()), axis=1
+    )
+    features = list(lat_lng)
+    return features
+
+def get_reference_shoreline_as_array(
+    shoreline_gdf: gpd.geodataframe, output_crs: str
+) -> np.ndarray:
+    """
+    Converts a GeoDataFrame of shoreline features into a numpy array of latitudes, longitudes, and zeroes representing the mean sea level.
+    Ex. [[lat, lon, 0], [lat, lon, 0], ...]
+    Args:
+    - shoreline_gdf (GeoDataFrame): A GeoDataFrame of shoreline features.
+    - output_crs (str): The output CRS to which the shoreline features need to be projected.
+
+    Returns:
+    - np.ndarray: A numpy array of latitudes, longitudes, and zeroes representing the mean sea level.
+    """
+    # project shorelines's espg from map's espg to output espg given in settings
+    reprojected_shorlines = shoreline_gdf.to_crs(output_crs)
+    # convert shoreline_in_roi gdf to coastsat compatible format np.array([[lat,lon,0],[lat,lon,0]...])
+    shorelines = make_coastsat_compatible(reprojected_shorlines)
+    # shorelines = [([lat,lon],[lat,lon],[lat,lon]),([lat,lon],[lat,lon],[lat,lon])...]
+    # Stack all the tuples into a single list of n rows X 2 columns
+    shorelines = np.vstack(shorelines)
+    # Add third column of 0s to represent mean sea level
+    shorelines = np.insert(shorelines, 2, np.zeros(len(shorelines)), axis=1)
+    
+    return shorelines
 
 def load_image_labels(npz_file: str) -> np.ndarray:
     """
@@ -135,6 +278,63 @@ def get_class_indices_from_model_card(npz_file,model_card_path):
     
     return water_classes_indices,land_mask,class_mapping 
 
+def extract_shorelines_with_reference_shoreline(directory:str,
+                    suffix:str,
+                    model_card_path:str,
+                    reference_shoreline:np.ndarray,
+                    extract_shorelines_settings:dict,
+                    cloud_mask_suffix:str = '3B_udm2_clip.tif',
+                    separator = '_3B'):
+                       
+    # if the directory contains no files with the suffix then return an empty dictionary
+    filtered_tiffs = glob.glob(os.path.join(directory, f"*{suffix}.tif"))
+    if len(filtered_tiffs) == 0:
+        print(f"No tiffs found in the directory: {directory}") 
+        return {}                 
+                       
+    all_extracted_shorelines = []
+    for target_path in filtered_tiffs:
+        base_filename = processing.get_base_filename(target_path, separator)
+        # get the processed coregistered file, the cloud mask and the npz file
+        cloud_mask_path = utils.get_file_path(directory, base_filename, f"*{cloud_mask_suffix}")
+        if not cloud_mask_path:
+            print(f"Skipping {cloud_mask_path} because cloud mask not found")
+            continue
+        # get the date from the path
+        date=processing.get_date_from_path(base_filename)
+
+        # apply the model to the image
+        model.apply_model_to_image(target_path,directory,False,False)
+        # this is the file generated by the model
+        npz_path = os.path.join(directory, 'out', f"{base_filename}{suffix}_res.npz")
+        if not os.path.exists(npz_path):
+            print(f"Skipping {npz_path} because it does not exist")
+            continue
+            
+        save_path = os.path.join(directory, 'shoreline_detection_figures')
+        # this shoreline is in the UTM projection
+        shoreline_gdf = get_shorelines_from_model_reference_shoreline(cloud_mask_path,
+                                                  target_path,
+                                                  model_card_path,
+                                                  npz_path,date,
+                                                  satname= 'planet',
+                                                settings = extract_shorelines_settings,
+                                                reference_shoreline = reference_shoreline,
+                                            save_path=save_path)
+        all_extracted_shorelines.append(shoreline_gdf)
+
+    # put all the shorelines into a single geodataframe
+    shorelines_gdf = concat_and_sort_geodataframes(all_extracted_shorelines, "date")
+
+    # save the geodataframe to a geojson file
+    extracted_shorelines_path = os.path.join(directory, f"raw_extracted_shorelines.geojson")    
+    shorelines_gdf.to_file(extracted_shorelines_path, driver="GeoJSON")
+    print(f"saved extracted shorelines to {extracted_shorelines_path}")
+
+    # then intersect these shorelines with the transects
+    shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf)
+    return shorelines_dict
+
 def extract_shorelines(directory:str,
                     suffix:str,
                     model_card_path:str,
@@ -190,9 +390,101 @@ def extract_shorelines(directory:str,
     print(f"saved extracted shorelines to {extracted_shorelines_path}")
 
     # then intersect these shorelines with the transects
-    shorelines_dict = transects.convert_shoreline_gdf_to_dict(shorelines_gdf)
+    shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf)
     return shorelines_dict
-                       
+
+
+def get_shorelines_from_model_reference_shoreline(planet_cloud_mask_path:str,
+                              planet_path:str,
+                              model_card_path,
+                              npz_file,
+                              date,
+                              satname,
+                              settings,
+                              reference_shoreline:np.ndarray,
+                              save_path=""):
+    """
+    Extracts shorelines from a model using the provided inputs.
+
+    Args:
+        planet_cloud_mask_path (str): The file path to the planet cloud mask.
+        planet_path (str): The file path to the planet image.
+        model_card_path: The file path to the model card.
+        npz_file: The file path to the npz file.
+        date: The date of the shoreline extraction.
+        satname: The name of the satellite.
+        settings: The settings for the shoreline extraction.
+        topobathy_path (str, optional): The file path to the topobathy mask. Defaults to None.
+        save_path (str, optional): The directory path to save the extracted shoreline. Defaults to the current working directory.
+
+    Returns:
+        geopandas.GeoDataFrame: The extracted shoreline as a GeoDataFrame.
+    """
+
+    if not save_path:
+        save_path = os.path.dirname(planet_path)
+    # get the labels for water and land
+    water_classes_indices,land_mask,class_mapping  = get_class_indices_from_model_card(npz_file,model_card_path) 
+    all_labels = load_image_labels(npz_file)
+    # remove any segments of land that are too small to be considered beach from the land mask
+    min_beach_area = 10000
+    land_mask = remove_small_objects_and_binarize(land_mask, min_beach_area)
+
+    # ge the no data and cloud masks
+    im_nodata = rasterio.open(planet_cloud_mask_path).read(8)
+    cloud_mask = rasterio.open(planet_cloud_mask_path).read(6)
+    cloud_shadow_mask = rasterio.open(planet_cloud_mask_path).read(3)
+    # combine the cloud and shadow mask
+    cloud_and_shadow_mask = np.logical_or(cloud_mask, cloud_shadow_mask)
+
+    planet_RGB = read_planet_tiff(planet_path,[1,2,3])
+    image_epsg = get_epsg_from_tiff(planet_path)
+    if image_epsg is None:
+        raise ValueError(f"The image does not have a valid EPSG code. Image : {planet_path}")
+    image_epsg = int(image_epsg)
+    georef = get_georef(planet_path)
+
+    # for planet the pixel size is 3m and the land mask is the same size as the image
+    # this creates a reference shoreline buffer in pixel coordinates
+    reference_shoreline_buffer = create_shoreline_buffer(land_mask.shape, georef, image_epsg, 3, reference_shoreline,settings)
+
+    # find the contours of the land mask & then filter out the shorelines that are too close to the cloud mask
+    contours = simplified_find_contours(
+        land_mask,
+        reference_shoreline_buffer=reference_shoreline_buffer
+        )
+    # this shoreline is in UTM coordinates
+    filtered_shoreline_gdf = process_shoreline(
+            contours,
+            cloud_and_shadow_mask,
+            im_nodata,
+            georef,
+            image_epsg,
+            settings,
+            date,
+        )
+    # convert the shorelines to a list of numpy arrays that can be plotted
+    single_shoreline = []
+    for geom in filtered_shoreline_gdf.geometry:
+        single_shoreline.append(np.array(geom.coords))
+    shoreline = extract_contours(single_shoreline)
+
+    shoreline_detection_figures(
+        planet_RGB,
+        cloud_and_shadow_mask,
+        land_mask,
+        all_labels,
+        shoreline,
+        image_epsg,
+        georef,
+        date,
+        "planet",
+        class_mapping,
+        settings["output_epsg"],
+        save_path=save_path,
+        reference_shoreline_buffer=reference_shoreline_buffer,
+    )
+    return filtered_shoreline_gdf               
 
 def get_shorelines_from_model(planet_cloud_mask_path:str,
                               planet_path:str,
@@ -534,6 +826,7 @@ def concat_and_sort_geodataframes(
     )  # Ensure the date column is in datetime format
     sorted_gdf = concatenated_gdf.sort_values(by=date_column).reset_index(drop=True)
     return sorted_gdf
+
 
 def shoreline_detection_figures(
     im_ms: np.ndarray,
