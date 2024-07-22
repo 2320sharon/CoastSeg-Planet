@@ -55,7 +55,24 @@ pip install transformers
 
 # Step 1: Download Imagery
 ## 1. Get your planet API key
+Copy the planet API key.
+![image](https://github.com/user-attachments/assets/efa063b3-2f14-4406-936f-0129cf01e0b7)
 ## 2. Add it to the config.ini file
+Paste it into the config.ini file
+![image](https://github.com/user-attachments/assets/b505e4d4-6e6e-45b4-90fe-166fcc9ea807)
 ## 3. Activate the environment
+```
+conda activate coastseg_planet
+cd <location you installed coastseg-planet>
+```
 ## 4. Run the Script `download_script.py`
+Before you run this script make sure to have geojson file containing an ROI.
+Then edit this file to select:
+- date range
+- order name
+- max cloud cover
 
+```
+conda activate coastseg_planet
+cd <location you installed coastseg-planet>
+```
