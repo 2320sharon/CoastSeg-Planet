@@ -17,7 +17,7 @@ from skimage import transform
 import skimage.measure as measure
 import skimage.morphology as morphology
 from scipy.spatial import KDTree
-from shapely.geometry import LineString
+from shapely.geometry import LineString,MultiLineString
 
 # Local module imports
 from coastseg_planet import processing, model, utils
@@ -283,6 +283,8 @@ def extract_shorelines_with_reference_shoreline(directory:str,
         return {}                 
                        
     all_extracted_shorelines = []
+    counter = 0
+
     for target_path in tqdm(filtered_tiffs, desc="Extracting Shorelines"):
         base_filename = processing.get_base_filename(target_path, separator)
         # get the processed coregistered file, the cloud mask and the npz file
@@ -311,7 +313,16 @@ def extract_shorelines_with_reference_shoreline(directory:str,
                                                 settings = extract_shorelines_settings,
                                                 reference_shoreline = reference_shoreline,
                                             save_path=save_path)
+        
         all_extracted_shorelines.append(shoreline_gdf)
+        counter += 1
+
+        # Save the collected shorelines so far
+        if counter % 3 == 0 and len(all_extracted_shorelines) > 0:
+            shorelines_gdf = concat_and_sort_geodataframes(all_extracted_shorelines, "date")
+            extracted_shorelines_path = os.path.join(directory, f"raw_extracted_shorelines.geojson")
+            shorelines_gdf.to_file(extracted_shorelines_path, driver="GeoJSON")
+            print(f"Saved extracted shorelines to {extracted_shorelines_path}")
 
     # put all the shorelines into a single geodataframe
     if len(all_extracted_shorelines) == 0:
@@ -421,7 +432,7 @@ def get_shorelines_from_model_reference_shoreline(planet_cloud_mask_path:str,
     water_classes_indices,land_mask,class_mapping  = get_class_indices_from_model_card(npz_file,model_card_path) 
     all_labels = load_image_labels(npz_file)
     # remove any segments of land that are too small to be considered beach from the land mask
-    min_beach_area = 10000
+    min_beach_area = settings.get("min_beach_area", 10000)
     land_mask = remove_small_objects_and_binarize(land_mask, min_beach_area)
 
     # ge the no data and cloud masks

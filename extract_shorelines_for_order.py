@@ -9,7 +9,7 @@ import geopandas as gpd
 # Project-specific Imports
 from coastseg_planet import processing
 from coastseg_planet import model
-from coastseg_planet import coregister
+from coastseg_planet import utils
 from coastseg_planet.utils import filter_files_by_area
 from coastseg_planet import transects
 from coastseg_planet import shoreline_extraction
@@ -21,7 +21,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
 download_settings = {}
 
 extract_shorelines_settings = {
-    'output_epsg': 4326,       # native epsg of the ROI 
+    'output_epsg': 4326,       # Enter the native epsg of the ROI 
     'min_length_sl': 100,      # minimum length of the shoreline to be considered
     'dist_clouds': 50,         # distance to remove clouds from the shoreline
     'min_beach_area': 1000,    # minimum area of the beach to be considered
@@ -118,6 +118,15 @@ shorelines_dict = shoreline_extraction.extract_shorelines_with_reference_shoreli
                                                           ref_sl,
                                                         extract_shorelines_settings,
                                                         )
+
+# save the shoreline dictionary to a json file
+shoreline_dictionary_path = os.path.join(good_dir,'shorelines_dict.json')
+utils.save_to_json(shorelines_dict,shoreline_dictionary_path)
+
+# optionally load the shoreline dictionary from a json file if you have already run the extraction and want to skip the extraction step
+
+# if os.path.exists(shoreline_dictionary_path):
+#     shorelines_dict = utils.load_data_from_json(shoreline_dictionary_path)
 
 # INTERSECT SHORELINES WITH TRANSECTS
 if not os.path.exists(transects_path):

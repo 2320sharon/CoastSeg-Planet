@@ -1,12 +1,96 @@
 import os
-import numpy as np
 import glob
-import pandas as pd
+import json
 import shutil
+import datetime
 from scipy.ndimage import zoom
 import geopandas as gpd
+import pandas as pd
+import numpy as np
 from  coastseg_planet.processing import (get_tiffs_with_bad_area
 )
+from json import JSONEncoder
+
+def load_data_from_json(filepath: str) -> dict:
+    """
+    Reads data from a JSON file and returns it as a dictionary.
+
+    The function reads the data from the specified JSON file using the provided filepath.
+    It applies a custom object hook, `DecodeDateTime`, to decode the datetime and shoreline
+    data if they exist in the dictionary.
+
+    Args:
+        filepath (str): Path to the JSON file.
+
+    Returns:
+        dict: Data read from the JSON file as a dictionary.
+
+    """
+
+    def DecodeDateTime(readDict):
+        """
+        Helper function to decode datetime and shoreline data in the dictionary.
+
+        Args:
+            readDict (dict): Dictionary to decode.
+
+        Returns:
+            dict: Decoded dictionary.
+
+        """
+        if "dates" in readDict:
+            tmp = [
+                datetime.datetime.fromisoformat(dates) for dates in readDict["dates"]
+            ]
+            readDict["dates"] = tmp
+        if "shorelines" in readDict:
+            tmp = [
+                np.array(shoreline) if len(shoreline) > 0 else np.empty((0, 2))
+                for shoreline in readDict["shorelines"]
+            ]
+            readDict["shorelines"] = tmp
+        return readDict
+
+    with open(filepath, "r") as fp:
+        data = json.load(fp, object_hook=DecodeDateTime)
+    return data
+
+def save_to_json(data: dict, filepath: str) -> None:
+    """
+    Serializes a dictionary to a JSON file, handling special serialization for datetime and numpy ndarray objects.
+
+    The function handles two special cases:
+    1. If the data contains datetime.date or datetime.datetime objects, they are serialized to their ISO format.
+    2. If the data contains numpy ndarray objects, they are converted to lists before serialization.
+
+    Parameters:
+    - data (dict): Dictionary containing the data to be serialized to a JSON file.
+    - filepath (str): Path (including filename) where the JSON file should be saved.
+
+    Returns:
+    - None
+
+    Note:
+    - This function requires the json, datetime, and numpy modules to be imported.
+    """
+
+    class DateTimeEncoder(JSONEncoder):
+        # Override the default method
+        def default(self, obj):
+            if isinstance(obj, (datetime.date, datetime.datetime)):
+                return obj.isoformat()
+            # Check for numpy arrays
+            if isinstance(obj, np.ndarray):
+                # Check if the dtype is 'object', which indicates it might have mixed types including datetimes
+                if obj.dtype == "object":
+                    # Convert each element of the array
+                    return [self.default(item) for item in obj]
+                else:
+                    # If it's not an object dtype, simply return the array as a list
+                    return obj.tolist()
+
+    with open(filepath, "w") as fp:
+        json.dump(data, fp, cls=DateTimeEncoder)
 
 def get_matching_files(planet_dir, patterns=set(["*AnalyticMS_clip.tif", "*3B_AnalyticMS_toar_clip.tif"])):
     """
