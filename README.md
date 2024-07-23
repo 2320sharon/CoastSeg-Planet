@@ -147,7 +147,6 @@ Use coastseg to get a geojson containing only the transects. Use the Save Featur
 - These should all be in the SAME directory NOT SUBDIRECTORIES
 
 ### 4. Run the Script   
-
-
+`python extract_shorelines_for_order.py`
 
 
