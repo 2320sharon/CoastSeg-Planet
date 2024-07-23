@@ -111,7 +111,7 @@ filtered_tiffs = glob.glob(os.path.join(good_dir, f"*{suffix}.tif"))
 if len(filtered_tiffs) == 0:
     print("No tiffs found in the directory")
 
-# then intersect these shorelines with the transects
+# then intersect these shorelines with the transects (comment this line out if you are loading from a file)
 shorelines_dict = shoreline_extraction.extract_shorelines_with_reference_shoreline(good_dir,
                                                           suffix,
                                                           model_card_path,
@@ -121,10 +121,11 @@ shorelines_dict = shoreline_extraction.extract_shorelines_with_reference_shoreli
 
 # save the shoreline dictionary to a json file
 shoreline_dictionary_path = os.path.join(good_dir,'shorelines_dict.json')
+
+# commment the line below out if you are loading the shoreline dictionary from a json file
 utils.save_to_json(shorelines_dict,shoreline_dictionary_path)
 
-# optionally load the shoreline dictionary from a json file if you have already run the extraction and want to skip the extraction step
-
+# optionally load the shoreline dictionary from a json file if you have already run the extraction and want to skip the extraction step. Uncomment the lines below
 # if os.path.exists(shoreline_dictionary_path):
 #     shorelines_dict = utils.load_data_from_json(shoreline_dictionary_path)
 

@@ -41,7 +41,29 @@ from coastseg.extracted_shoreline import (
 from coastsat import SDS_tools
 
 
+def stringify_datetime_columns(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """
+    Check if any of the columns in a GeoDataFrame have the type pandas timestamp and convert them to string.
 
+    Args:
+        gdf: A GeoDataFrame.
+
+    Returns:
+        A new GeoDataFrame with the same data as the original, but with any timestamp columns converted to string.
+    """
+    timestamp_cols = [
+        col for col in gdf.columns if pd.api.types.is_datetime64_any_dtype(gdf[col])
+    ]
+
+    if not timestamp_cols:
+        return gdf
+
+    gdf = gdf.copy()
+
+    for col in timestamp_cols:
+        gdf[col] = gdf[col].astype(str)
+
+    return gdf
 
 def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_crs=None):
     """
@@ -332,12 +354,13 @@ def extract_shorelines_with_reference_shoreline(directory:str,
     shorelines_gdf = concat_and_sort_geodataframes(all_extracted_shorelines, "date")
 
     # save the geodataframe to a geojson file
-    extracted_shorelines_path = os.path.join(directory, f"raw_extracted_shorelines.geojson")    
-    shorelines_gdf.to_file(extracted_shorelines_path, driver="GeoJSON")
+    extracted_shorelines_path = os.path.join(directory, f"raw_extracted_shorelines.geojson")  
+    stringified_shoreline_gdf = stringify_datetime_columns(shorelines_gdf.copy())
+    stringified_shoreline_gdf.to_file(extracted_shorelines_path, driver="GeoJSON")
     print(f"saved extracted shorelines to {extracted_shorelines_path}")
 
     # then intersect these shorelines with the transects
-    shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf)
+    shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf,date_format='%Y-%m-%dT%H:%M:%S%z')
     return shorelines_dict
 
 def extract_shorelines(directory:str,
@@ -395,7 +418,7 @@ def extract_shorelines(directory:str,
     print(f"saved extracted shorelines to {extracted_shorelines_path}")
 
     # then intersect these shorelines with the transects
-    shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf)
+    shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf,date_format='%Y-%m-%dT%H:%M:%S%z')
     return shorelines_dict
 
 
@@ -829,7 +852,10 @@ def concat_and_sort_geodataframes(
     concatenated_gdf[date_column] = pd.to_datetime(
         concatenated_gdf[date_column]
     )  # Ensure the date column is in datetime format
+
     sorted_gdf = concatenated_gdf.sort_values(by=date_column).reset_index(drop=True)
+    # convert the date to a string
+
     return sorted_gdf
 
 

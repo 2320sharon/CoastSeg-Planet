@@ -14,6 +14,7 @@ import os
 import shapely
 from json import JSONEncoder
 import pandas as pd
+from coastseg_planet import utils
 
 # Right now the function expects the extracted shorelines to be in this format
         # output[satname] = {
@@ -28,13 +29,14 @@ import pandas as pd
 #
 # These are then merged by output = SDS_tools.merge_output(output)
 
-def intersect_transects(transects_path:str,shorelines_dict:dict,output_epsg:int,save_location:str):
+def intersect_transects(transects_path:str,shorelines_dict:dict,output_epsg:int,save_location:str,drop_intersection_pts:bool=False):
     """
     Intersects transects with shorelines and saves the raw timeseries.
 
     Parameters:
     transects_path (str): The file path to the transects shapefile.
     save_location (str): The directory where the raw timeseries will be saved.
+    drop_intersection_pts(bool) : If True, drop the intersection points that are not on the transects. Defaults to False
 
     Returns:
     None
@@ -55,6 +57,34 @@ def intersect_transects(transects_path:str,shorelines_dict:dict,output_epsg:int,
     intersections_dict = compute_intersection_QC(shorelines_dict, transects_dict)
     # save the raw timeseries
     save_raw_timesseries(shorelines_dict,intersections_dict, save_location,verbose=True)
+
+    cross_distance_df = get_cross_distance_df(
+        shorelines_dict,intersections_dict
+    )
+    cross_distance_df.dropna(axis="columns", how="all", inplace=True)
+    # get the last point (aka the seaward point) from each transect
+    seaward_points = get_seaward_points_gdf(transects_gdf)
+    timeseries_df = convert_transect_ids_to_rows(cross_distance_df)
+    timeseries_df = timeseries_df.sort_values('dates')
+    merged_timeseries_df=merge_dataframes(timeseries_df, seaward_points,columns_to_merge_on=["transect_id"])
+    merged_timeseries_df['x'] = merged_timeseries_df['geometry'].apply(lambda geom: geom.x)
+    merged_timeseries_df['y'] = merged_timeseries_df['geometry'].apply(lambda geom: geom.y)
+    merged_timeseries_df.drop('geometry', axis=1, inplace=True)
+
+    # re-order columns
+    merged_timeseries_df = merged_timeseries_df[['dates', 'x', 'y', 'transect_id', 'cross_distance']]
+    # add the shore_x and shore_y columns to the merged time series which are the x and y coordinates of the shore points along the transects
+    merged_timeseries_df,timeseries_df = add_lat_lon_to_timeseries(merged_timeseries_df,
+                                                                    transects_gdf.to_crs('epsg:4326'),cross_distance_df,save_location,
+                              drop_intersection_pts,
+                              "raw")
+    # save the raw transect time series which contains the columns ['dates', 'x', 'y', 'transect_id', 'cross_distance','shore_x','shore_y']  to file
+    filepath = os.path.join(save_location, "raw_transect_time_series_merged.csv")
+    merged_timeseries_df.to_csv(filepath, sep=",",index=False) 
+
+    save_path = os.path.join(save_location, "transects_cross_distances.json")
+    utils.save_to_json(intersections_dict, save_path)
+
 
 def convert_transect_ids_to_rows(df):
     """
@@ -502,12 +532,18 @@ def convert_date_gdf(gdf):
         GeoDataFrame: The converted GeoDataFrame with date columns in datetime format.
     """
     gdf = gdf.copy()
-    if 'dates' in gdf.columns:
-        gdf['dates'] = pd.to_datetime(gdf['dates']).dt.tz_localize('UTC')
-        gdf['dates'] = pd.to_datetime(gdf['dates']).dt.tz_convert(None)
-    if 'date' in gdf.columns:
-        gdf['date'] = pd.to_datetime(gdf['date']).dt.tz_localize('UTC')
-        gdf['date'] = pd.to_datetime(gdf['date']).dt.tz_convert(None)
+    for column_name in ['dates','date']:
+        if column_name in gdf.columns:
+            if not pd.api.types.is_datetime64_any_dtype(gdf[column_name]):
+                gdf[column_name] = pd.to_datetime(gdf[column_name]).dt.tz_localize('UTC')
+                gdf[column_name] = pd.to_datetime(gdf[column_name]).dt.tz_convert(None)
+
+    # if 'dates' in gdf.columns:
+    #     gdf['dates'] = pd.to_datetime(gdf['dates']).dt.tz_localize('UTC')
+    #     gdf['dates'] = pd.to_datetime(gdf['dates']).dt.tz_convert(None)
+    # if 'date' in gdf.columns:
+    #     gdf['date'] = pd.to_datetime(gdf['date']).dt.tz_localize('UTC')
+    #     gdf['date'] = pd.to_datetime(gdf['date']).dt.tz_convert(None)
     gdf = stringify_datetime_columns(gdf)
     return gdf
 
