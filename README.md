@@ -114,6 +114,40 @@ In the screenshot below you can see the orders created on the Planet dashboard. 
 | ![Small Order](https://github.com/user-attachments/assets/81e10727-4637-465a-b54e-42ccb92d9af0) | ![Large Order](https://github.com/user-attachments/assets/51a70d8c-dadd-42e5-a271-e302b41753fb) |
 | No need to move files | Move all the tif, json, xml files to a single directory |
 
+![image](https://github.com/user-attachments/assets/875c83f0-072e-4ee4-abb9-27eb9fcc1882)
+
+### 2. Get a Shoreline GeoJSON File
+
+Use coastseg to get a geojson containing only the reference shoreline. Use the Save Feature to File button in CoastSeg pictured below.
+
+![image](https://github.com/user-attachments/assets/9bd2e252-fa9b-40de-95c2-c8b91abfe7fb)
+
+### 3. Get a Transects GeoJSON File
+
+Use coastseg to get a geojson containing only the transects. Use the Save Feature to File button in CoastSeg pictured below.
+
+![image](https://github.com/user-attachments/assets/9bd2e252-fa9b-40de-95c2-c8b91abfe7fb)
+
+## Phase 2 : Extract Shorelines
+
+### 1. Edit the Extract Shoreline Settings
+- `max_dist_ref` Enter the size in meters of the reference shoreline buffer. This is the region in which shorelines can be extracted shown in greenish yellow
+![2023-06-16-15-30-32_planet](https://github.com/user-attachments/assets/adf39ffc-0a74-4e5f-838b-a5f9bce65286)
+
+- `dist_clouds`: Enter the distance from the clouds that the shorelines must be.
+
+- `min_beach_area`: Enter the minimum area the beach must be in order to be identified as land. This filters the land mask to remove any segments of land that are less than this area. Usually these are misclassifications
+
+- `min_length_sl`: Enter the minimum length of the shoreline in order for a segment to be considered a valid shoreline.
+
+### 2. Enter the Locations of the ROI, Transects, and Shoreline Files
+
+### 3. Enter the Location where all the Imagery was Downloaded
+- This is the directory that contains all the .tif, .xml and .json files
+- These should all be in the SAME directory NOT SUBDIRECTORIES
+
+### 4. Run the Script   
+
 
 
 
