@@ -76,7 +76,7 @@ To finish downloading an existing order set `continue_existing` in `download.dow
 ### To Overwrite Existing Order
 To finish downloading an existing order set `overwrite` in `download.download_order_by_name`  to be `overwrite=True`. This tells the Planet API you want to create an order with the same name that already exists. I don't recommended doing this as it wastes resources, but it may be necessary if you accidently entered the wrong details on your original order
 
-### Coregister using the Planet API
+### To Coregister Using the Planet API
 To coregister all the imagery in your order `coregister` in `download.download_order_by_name`  to be `coregister=True`. This tells the Planet API you want coregister all the imagery in each order to a single scene. WARNING for large orders that have to be split into several suborders this will result in each suborder being registered to a scene in its order. For example 1 large order split into 4 suborders will result in 4 scenes that are used as the reference scene for coregistration.
 
 Also this cannot be combined with `continue_existing` or `overwrite` as this setting can only be set for a new order NOT an existing order
