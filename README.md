@@ -103,7 +103,8 @@ In the screenshot below you can see the orders created on the Planet dashboard. 
 
 ![image](https://github.com/user-attachments/assets/3bb06930-9c9c-4d18-9096-02b6b1cdc637)
 
-# Extract Shorelines From a Planet Order
+# Extract Shorelines From a Planet Order 
+#### Script : `extract_shorelines_for_order.py`
 ## Phase 1 : Prepare the Data
 ### 1. Move all the suborder to a single folder (only for large orders)
 - If you had a large order `CoastSeg Planet` automatically will split your order into sub orders and place them each in their own folder under your order.
