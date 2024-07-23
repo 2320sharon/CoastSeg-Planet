@@ -165,6 +165,8 @@ planet_dir = r"C:\development\coastseg-planet\CoastSeg-Planet\downloads\DUCK_pie
 
 # Outputs of Extracting Shorelines
 
+All of these outputs will be saved in the good directory of directory where all the planet imagery used to extract shorelines was saved.
+
 | Filename | Data | Screenshot |
 |----------|----------|----------|
 | raw_extracted_shorelines.geojson   | Raw extracted shorelines as multilinestring vectors   | ![image](https://github.com/user-attachments/assets/9dd35a17-3a90-4810-81e4-be4c342c95ea)|
