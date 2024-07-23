@@ -142,10 +142,32 @@ Use coastseg to get a geojson containing only the transects. Use the Save Featur
 - `min_length_sl`: Enter the minimum length of the shoreline in order for a segment to be considered a valid shoreline.
 
 ### 2. Enter the Locations of the ROI, Transects, and Shoreline Files
+```
+# Enter the locations of the feature inputs
+# ----------------
+# 1. Enter the path ROI = Region of Interest used to download your order
+roi_path = os.path.join(os.getcwd(),"sample_data", "rois.geojson")
+# 2. Enter the path to the transects file
+# transects_path = r"C:\development\coastseg-planet\downloads\Alaska_TOAR_enabled\42444c87-d914-4330-ba4b-3c948829db3f\PSScene\transects.geojson"
+transects_path =os.path.join(os.getcwd(),"sample_data", "transects.geojson")
+# 3. Enter the path to the reference shoreline file
+# shoreline_path = r"C:\development\coastseg-planet\downloads\Alaska_TOAR_enabled\42444c87-d914-4330-ba4b-3c948829db3f\PSScene\good\shoreline.geojson"
+shoreline_path =os.path.join(os.getcwd(),"sample_data", "shoreline.geojson")
+
+```
+
 
 ### 3. Enter the Location where all the Imagery was Downloaded
 - This is the directory that contains all the .tif, .xml and .json files
 - These should all be in the SAME directory NOT SUBDIRECTORIES
+
+```
+# 4. Enter the location of directory containing the downloaded imagery from Planet
+#   - Make sure this directory contains the tif,json,and xml files for the entire order
+planet_dir = ''
+planet_dir = r"C:\development\coastseg-planet\CoastSeg-Planet\downloads\DUCK_pier_cloud_0.7_TOAR_enabled_2023-06-01_to_2023-08-01\31eea859-d1dd-46c2-b6a4-7c15871be926\PSScene"
+
+```
 
 ### 4. Run the Script   
 `python extract_shorelines_for_order.py`
