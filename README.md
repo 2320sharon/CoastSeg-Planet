@@ -63,6 +63,25 @@ Then edit this file to select:
 - order name
 - max cloud cover
 Save the changes, then run the script when you are ready.
+
+The default settings in the download script will create a brand new order and it can take anywhere from 10 minutes to a few hours for planet to finish creating your order during which the status will show "Running". Due to how long it takes you might need to set the  `continue_existing` to be `continue_existing=True` if the script errors out because Planet took too long to create your order.
+
+ Large orders will be split into several small orders automatically by the download script, which is why when you place 1 large order you may see several smaller orders appear on your dashboard. This allows us to place orders larger than the limit set by Planet.
+
+
+
+### To Finish Downloading an Existing Order
+To finish downloading an existing order set `continue_existing` in `download.download_order_by_name`  to be `continue_existing=True`. This tells the Planet API you want to get your existing order, NOT start a new order with the same name.
+
+### To Overwrite Existing Order
+To finish downloading an existing order set `overwrite` in `download.download_order_by_name`  to be `overwrite=True`. This tells the Planet API you want to create an order with the same name that already exists. I don't recommended doing this as it wastes resources, but it may be necessary if you accidently entered the wrong details on your original order
+
+### To Coregister Using the Planet API
+To coregister all the imagery in your order `coregister` in `download.download_order_by_name`  to be `coregister=True`. This tells the Planet API you want coregister all the imagery in each order to a single scene. WARNING for large orders that have to be split into several suborders this will result in each suborder being registered to a scene in its order. For example 1 large order split into 4 suborders will result in 4 scenes that are used as the reference scene for coregistration.
+
+Also this cannot be combined with `continue_existing` or `overwrite` as this setting can only be set for a new order NOT an existing order
+
+### Run the Script
 ```
 conda activate coastseg_planet
 cd <location you installed coastseg-planet>
@@ -70,6 +89,7 @@ python download_script.py
 ```
 ### 5. Wait for your order to finish
 The planet API prepares your order after you request it. If you realize that you made the wrong order and it hasn't finished on Planet yet, you can cancel the order with the `cancel_order.py` script. However if your order was submitted and is being prepared this script won't work. 
+
 #### Important - What to do for large orders
 It can take anywhere from 10 minutes to a few hours for planet to finish your order. During this time the script will show a status of "Running". If it takes too long for Planet to prepare the order the script will eventually quit because the Planet API took too long to finish your order. If that happens change `continue_existing` in `download.download_order_by_name`  to be `continue_existing=True`. This tells the Planet API you want to get your existing order, NOT start a new order with the same name
 
