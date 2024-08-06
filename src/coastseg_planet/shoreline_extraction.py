@@ -17,7 +17,7 @@ from skimage import transform
 import skimage.measure as measure
 import skimage.morphology as morphology
 from scipy.spatial import KDTree
-from shapely.geometry import LineString,MultiLineString
+from shapely.geometry import LineString, MultiLineString, MultiPoint
 
 # Local module imports
 from coastseg_planet import processing, model, utils
@@ -65,7 +65,21 @@ def stringify_datetime_columns(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
     return gdf
 
-def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_crs=None):
+def get_multiline_list(geometry):
+    """Get list of coordinates from a MultiLineString geometry."""
+    lines_list = []
+    for line in geometry.geoms:
+        lines_list.extend(line.coords)
+    return lines_list
+
+def get_multipoint_list(geometry):
+    """Get list of coordinates from a MultiPoint geometry."""
+    points_list = []
+    for point in geometry.geoms:
+        points_list.append(list(point.coords[0]))
+    return points_list
+
+def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_crs=None,):
     """
     Convert a GeoDataFrame containing shorelines into a dictionary with dates and shorelines.
 
@@ -83,22 +97,66 @@ def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_
     if output_crs is not None:
         shoreline_gdf = shoreline_gdf.to_crs(output_crs)
 
-    for idx, row in shoreline_gdf.iterrows():
-        date_str = row.date.strftime(date_format)
-        geometry = row.geometry
-        if geometry is not None:
-            if isinstance(geometry, MultiLineString):
-                for line in geometry.geoms:
-                    shorelines_array = np.array(line.coords)
-                    shorelines.append(shorelines_array)
-                    dates.append(date_str)
+    for date, group in shoreline_gdf.groupby('date'):
+        date_str = date.strftime(date_format)
+        dates.append(date_str)
+
+        shorelines_array = []
+        points_list = []
+        # for each geometry in the group, get the coordinates as a list of points
+        for geometry in group.geometry:
+            # add all the points from the geometry to the points_list
+            # print(f"geometry type: {geometry.geom_type}")
+            if isinstance(geometry ,MultiPoint):
+                pts = get_multipoint_list(geometry)
+                points_list.extend(pts)
+            elif isinstance(geometry, MultiLineString):
+                lines = get_multiline_list(geometry)
+                points_list.extend(lines)
             else:
-                shorelines_array = np.array(geometry.coords)
-                shorelines.append(shorelines_array)
-                dates.append(date_str)
+                points_list.extend(geometry.coords)
+
+        # put all the points into a single numpy array to represent the shoreline for that date then append to shorelines
+        shorelines_array = np.array(points_list)
+        shorelines.append(shorelines_array)
 
     shorelines_dict = {'dates': dates, 'shorelines': shorelines}
     return shorelines_dict
+
+# def convert_shoreline_gdf_to_dict(shoreline_gdf, date_format="%d-%m-%Y", output_crs=None):
+#     """
+#     Convert a GeoDataFrame containing shorelines into a dictionary with dates and shorelines.
+
+#     Parameters:
+#     shoreline_gdf (GeoDataFrame): The input GeoDataFrame with shoreline data.
+#     date_format (str): The format string for converting dates to strings. Default is "%d-%m-%Y".
+#     output_crs (str or dict, optional): The target CRS to convert the coordinates to. If None, no conversion is performed.
+
+#     Returns:
+#     dict: A dictionary with keys 'dates' and 'shorelines', where 'dates' is a list of date strings and 'shorelines' is a list of numpy arrays of coordinates.
+#     """
+#     shorelines = []
+#     dates = []
+
+#     if output_crs is not None:
+#         shoreline_gdf = shoreline_gdf.to_crs(output_crs)
+
+#     for idx, row in shoreline_gdf.iterrows():
+#         date_str = row.date.strftime(date_format)
+#         geometry = row.geometry
+#         if geometry is not None:
+#             if isinstance(geometry, MultiLineString):
+#                 for line in geometry.geoms:
+#                     shorelines_array = np.array(line.coords)
+#                     shorelines.append(shorelines_array)
+#                     dates.append(date_str)
+#             else:
+#                 shorelines_array = np.array(geometry.coords)
+#                 shorelines.append(shorelines_array)
+#                 dates.append(date_str)
+
+#     shorelines_dict = {'dates': dates, 'shorelines': shorelines}
+#     return shorelines_dict
 
 def create_shoreline_buffer(im_shape, georef, image_epsg, pixel_size, ref_sl,settings):
     """
@@ -359,7 +417,7 @@ def extract_shorelines_with_reference_shoreline(directory:str,
     stringified_shoreline_gdf.to_file(extracted_shorelines_path, driver="GeoJSON")
     print(f"saved extracted shorelines to {extracted_shorelines_path}")
 
-    # then intersect these shorelines with the transects
+    # convert the geodataframe to a dictionary
     shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf,date_format='%Y-%m-%dT%H:%M:%S%z')
     return shorelines_dict
 

@@ -39,7 +39,8 @@ def intersect_transects(transects_path:str,shorelines_dict:dict,output_epsg:int,
     drop_intersection_pts(bool) : If True, drop the intersection points that are not on the transects. Defaults to False
 
     Returns:
-    None
+    merged_timeseries_df (pd.DataFrame): The merged timeseries dataframe with latitude and longitude coordinates of each shoreline transect intersection point.
+    timeseries_df (pd.DataFrame): The original timeseries dataframe containing the cross distances for each transect with shoreline found on the corresponding date.
     """
     if shorelines_dict == {} or shorelines_dict.get("shorelines",[]) == []:
         raise ValueError("No shorelines found. Please provide a dictionary containing the extracted shorelines.")
@@ -84,6 +85,7 @@ def intersect_transects(transects_path:str,shorelines_dict:dict,output_epsg:int,
 
     save_path = os.path.join(save_location, "transects_cross_distances.json")
     utils.save_to_json(intersections_dict, save_path)
+    return merged_timeseries_df,timeseries_df
 
 
 def convert_transect_ids_to_rows(df):
