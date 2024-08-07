@@ -13,7 +13,7 @@ Currently the team behind CoastSeg Planet is researching how to co-register Plan
    - These radiance values need to be converted to TOA using a TOA conversion function
 
 
-## Co-Registeration
+## Co-Registration
 - CoastSeg downloads LandSat as TOA imagery from the tier 1 TOA collection which saves all the landsat values as 32 bit floats instead of unsigned 16 bit ints
 - CoastSeg-planet includes a script to convert 32bit float TOA imagery into unsigned 16 bit imagery that can be co-registered with the [arosics](https://git.gfz-potsdam.de/danschef/arosics) `COREG`` function
 
