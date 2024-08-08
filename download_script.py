@@ -3,10 +3,9 @@ from planet import Auth
 import os
 import asyncio
 import json
-
+import geopandas as gpd
 # 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
 CLOUD_COVER = 0.70
-
 
 # 1. Select a start and end date YYYY-MM-DD
 start_date = "2023-06-01"
@@ -20,8 +19,7 @@ order_name = f"DUCK_pier_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_d
 # 3. insert path to roi geojson
 # roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\boardwalk\roi.geojson"
 roi_path = os.path.join(os.getcwd(),"sample_data", "rois.geojson")
-with open(roi_path, "r") as file:
-    roi = json.load(file)
+roi = gpd.read_file(roi_path)
 
 # 4. read the api key from the config file and set it in the environment
 # Enter the API key into config.ini with the following format
@@ -56,6 +54,7 @@ asyncio.run(
         cloud_cover=CLOUD_COVER,
         product_bundle="analytic_udm2",
         coregister=False,           # if True will coregister the images to the image with the lowest cloud cover using Planet's coregistration service
+        min_area_percentage=0.5,    # minimum area percentage of the ROI's area that must be covered by the images to be downloaded
     )
 )
 

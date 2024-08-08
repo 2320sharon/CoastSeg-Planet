@@ -1,4 +1,5 @@
 import os
+import json
 import re
 from planet import collect
 from planet import Auth, Session, DataClient, OrdersClient, data_filter, order_request
@@ -14,6 +15,7 @@ from rasterio.transform import Affine
 import matplotlib
 import numpy as np
 import geopandas as gpd
+from shapely import geometry
 from typing import Optional, Tuple
 import bathyreq
 from skimage.transform import resize
@@ -23,6 +25,45 @@ from typing import List
 from datetime import datetime
 from typing import Dict, Any
 import shutil
+
+
+def filter_items_by_area(roi_gdf:gpd.GeoDataFrame,
+                         items:List[dict],
+                         min_area_percent:float=0.5)->List[dict]:
+    """
+    Filters a list of items based on their area within a region of interest (ROI). Any items whose area is lower than the minimum area percentage of the ROI will be removed.
+    
+    Args:
+        roi_gdf (gpd.GeoDataFrame): A GeoDataFrame representing the region of interest.
+        items (List[dict]): A list of dictionaries representing the items.
+        min_area_percent (float, optional): The minimum area percentage of the ROI that an item must have to be included. Defaults to 0.5.
+    Returns:
+        List[dict]: A filtered list of items that meet the area criteria.
+    """
+    # get the ids of each of the items
+    ids  = [item["id"] for item in items]
+    # make a GeoDataFrame from the items
+    polygons = [geometry.Polygon(item["geometry"]['coordinates'][0]) for item in items]
+    items_gdf = gpd.GeoDataFrame(geometry=polygons,crs="EPSG:4326")
+    items_gdf["id"] = ids 
+    # load the ROI and estimate the UTM CRS
+    utm_crs  = roi_gdf.estimate_utm_crs()
+    # clip the polygons of the images to download to the ROI
+    items_gdf = items_gdf.to_crs(utm_crs)
+    roi_gdf = roi_gdf.to_crs(utm_crs)
+    clipped_gdf = gpd.clip(items_gdf, roi_gdf)
+
+    # calculate the area of the clipped images & ROI
+    clipped_gdf["area"] = clipped_gdf["geometry"].area
+    roi_gdf["area"] = roi_gdf["geometry"].area
+    roi_area = roi_gdf["area"].sum()    
+
+    # drop any rows in clipped_gdf whose ROI is less than 50% of the total ROI
+    clipped_gdf = clipped_gdf[clipped_gdf["area"] > min_area_percent *roi_area]
+    print(f"Filtered out {len(items_gdf) - len(clipped_gdf)} items")
+    # filter the items_list to only include the items that are in the clipped_gdf
+    item_list = [item for item in items if item["id"] in clipped_gdf["id"].values]
+    return item_list
 
 
 def move_contents(main_folder,psscene_path, remove_path=False):
@@ -240,7 +281,7 @@ class FixPointNormalize(matplotlib.colors.Normalize):
 async def download_order_by_name(
     order_name: str,
     output_path: str,
-    roi: dict = {},
+    roi: gpd.GeoDataFrame,
     start_date: str = "",
     end_date: str = "",
     overwrite: bool = False,
@@ -250,6 +291,7 @@ async def download_order_by_name(
     clip:bool = True,
     toar:bool = True,
     coregister:bool = False,
+    min_area_percentage:float = 0.5,
     **kwargs,
 ):
     """
@@ -258,7 +300,7 @@ async def download_order_by_name(
     Args:
         order_name (str): The name of the order to download.
         output_path (str): The path where the downloaded order will be saved.
-        roi (dict, optional): The region of interest for the order. Defaults to an empty dictionary.
+        roi (gpd.geodatafram, optional): The region of interest for the order. Must have a CRS and it should contain a SINGLE ROI polygon.
         start_date (str, optional): The start date for the order. Defaults to an empty string.
         end_date (str, optional): The end date for the order. Defaults to an empty string.
         overwrite (bool, optional): Whether to overwrite an existing order with the same name. Defaults to False.
@@ -267,6 +309,7 @@ async def download_order_by_name(
         clip (bool, optional): Whether to clip the images to the ROI. Defaults to True.
         toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
         coregister (bool, optional): Whether to coregister the images. Defaults to False.
+        min_area_percentage (float, optional): The minimum area percentage of the ROI's area that must be covered by the images to be downloaded. Defaults to 0.5.
     kwargs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
     
@@ -285,9 +328,9 @@ async def download_order_by_name(
     if overwrite and continue_existing:
         raise ValueError("overwrite and continue_existing cannot both be True. As an order cannot be overwritten and continued at the same time. Please set one to False")
 
-
     async with planet.Session() as sess:
         cl = sess.client("orders")
+
         # check if an existing order with the same name exists
         order_ids = await get_order_ids_by_name(
             cl, order_name, states=order_states
@@ -304,11 +347,22 @@ async def download_order_by_name(
                 raise ValueError(
                     "start_date and end_date must be specified to create a new order"
                 )
-            if roi == {}:
-                raise ValueError("roi must be specified to create a new order")
-            print(f"download order by name coregister: {coregister}")
+            # if ROI is a geodataframe check if its empty or doesn't have a CRS
+            if isinstance(roi, gpd.GeoDataFrame):
+                if roi.empty:
+                    raise ValueError("GeoDataFrame roi must not be empty to create a new order")
+                if not roi.crs:
+                    raise ValueError("ROI must have a CRS to create a new order")
+            if isinstance(roi, dict):
+                if not roi:
+                    raise ValueError("ROI must not be empty to create a new order")
+                roi = gpd.GeoDataFrame.from_features(roi)
+                # assume the ROI is in epsg 4326
+                roi.set_crs("EPSG:4326",inplace=True)
+                print(f"Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS")
+
             await make_order_and_download(
-                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister, **kwargs
+                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister,min_area_percentage=min_area_percentage, **kwargs
             )
 
 
@@ -497,12 +551,9 @@ async def get_order_ids_by_name(client, order_name: str, states: Optional[List[s
         return matching_orders
     
     print(f"Found {len(orders_list)} orders")
-    print(orders_list)
-
 
     # First, try to find exact matches
     for order in orders_list:
-        print(f"order: {order}")
         if "name" not in order or "state" not in order:
             continue
         if order["name"] == order_name and order["state"] in states:
@@ -741,6 +792,7 @@ async def make_order_and_download(
     toar: bool = True,
     coregister: bool = False,
     product_bundle:str = "ortho_analytic_4b",
+    min_area_percentage:float = 0.5,
     **kwargs,
 ):
     """
@@ -756,6 +808,7 @@ async def make_order_and_download(
         toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
         coregister (bool, optional): Whether to coregister the images. Defaults to False.   
         product_bundle (str, optional): The product bundle to download. Defaults to "ortho_analytic_4b".
+        min_area_percentage (float, optional): The minimum area percentage of the ROI's area that must be covered by the images to be downloaded. Defaults to 0.5.
 
     kwargs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
@@ -769,10 +822,9 @@ async def make_order_and_download(
 
     async with planet.Session() as sess:
         cl = sess.client("data")
-
-        
-
-        combined_filter = create_combined_filter(roi, start_date, end_date,**kwargs)
+        # convert the ROI to a dictionary so it can be used with the Planet API
+        roi_dict  = json.loads(roi.to_json())
+        combined_filter = create_combined_filter(roi_dict, start_date, end_date,**kwargs)
 
         # Create the order request
         request = await cl.create_search(
@@ -791,6 +843,11 @@ async def make_order_and_download(
                   start_date: {start_date}\n\
                   end_date: {end_date}\n\
                   cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
+        
+        # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
+        print(f"Number of items to download before filtering by area: {len(item_list)}")
+        item_list = filter_items_by_area(roi, item_list,min_area_percentage)
+        print(f"Number of items to download after filtering by area: {len(item_list)}")
         # get the ids of the items group by acquired date
         ids = get_ids(item_list)
         print(f"Requesting {len(ids)} items")
@@ -801,9 +858,9 @@ async def make_order_and_download(
         cl = sess.client("orders")
 
         # get the tools to be applied to the order
-        tools = get_tools(roi, clip, toar, coregister, id_to_coregister)
+        tools = get_tools(roi_dict, clip, toar, coregister, id_to_coregister)
         print(f"tools: {tools}")
-        print(f"id_to_coregister: {id_to_coregister}")
+        print(f"id_to_coregister: {id_to_coregister} Apply Coregistration: {coregister}")
         # Process orders in batches
         await process_orders_in_batches(cl, ids, tools, download_path, order_name,product_bundle=product_bundle)
 
