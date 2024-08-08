@@ -1,10 +1,23 @@
 # Standard Library Imports
 import os
 import glob
+import logging
+import warnings
+from osgeo import gdal
+gdal.UseExceptions()
+
+# Suppress specific warning messages
+warnings.filterwarnings('ignore', message='Some layers from the model checkpoint')
 
 # Third-party Library Imports
-import warnings
 import geopandas as gpd
+
+warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
+warnings.filterwarnings("ignore", message="h5py is running against HDF5")
+
+# Set TensorFlow logging level to suppress informational and warning messages
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' # '0' = all messages are logged (default behavior), '1' = INFO messages are not printed, '2' = INFO and WARNING messages are not printed, '3' = INFO, WARNING, and ERROR messages are not printed
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 # Project-specific Imports
 from coastseg_planet import processing
@@ -13,10 +26,6 @@ from coastseg_planet import utils
 from coastseg_planet.utils import filter_files_by_area
 from coastseg_planet import transects
 from coastseg_planet import shoreline_extraction
-
-from coastseg import file_utilities
-
-warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
 
 download_settings = {}
 
@@ -35,9 +44,11 @@ model_settings = {}
 # ----------------
 # 1. Enter the path ROI = Region of Interest used to download your order
 roi_path = os.path.join(os.getcwd(),"sample_data", "rois.geojson")
+
 # 2. Enter the path to the transects file
 # transects_path = r"C:\development\coastseg-planet\downloads\Alaska_TOAR_enabled\42444c87-d914-4330-ba4b-3c948829db3f\PSScene\transects.geojson"
 transects_path =os.path.join(os.getcwd(),"sample_data", "transects.geojson")
+print(f"transects_path: {transects_path}")
 # 3. Enter the path to the reference shoreline file
 # shoreline_path = r"C:\development\coastseg-planet\downloads\Alaska_TOAR_enabled\42444c87-d914-4330-ba4b-3c948829db3f\PSScene\good\shoreline.geojson"
 shoreline_path =os.path.join(os.getcwd(),"sample_data", "shoreline.geojson")
@@ -65,13 +76,7 @@ RUN_GOOD_BAD_CLASSIFER = True   # Whether to run the classification model or not
 
 
 # Model Inputs
-model_path = r"C:\development\coastseg-planet\CoastSeg-Planet\models\best_rgb.h5"
-model_card_path = r'C:\development\coastseg-planet\CoastSeg-Planet\output_zoo\coastseg_planet\coastseg_planet\config\model_card.yml'
-weights_directory = r'C:\development\doodleverse\coastseg\CoastSeg\src\coastseg\downloaded_models\segformer_RGB_4class_8190958'
-model_card_path = file_utilities.find_file_by_regex(
-    weights_directory, r".*modelcard\.json$"
-)
-
+MODEL_NAME = 'segformer_RGB_4class_8190958'
 # Filter out the files that are less than 90% of the ROI area
 filter_files_by_area(planet_dir,threshold=0.90,roi_path=roi_path,verbose=True)
 
@@ -92,8 +97,8 @@ if CONVERT_TO_MODEL_FORMAT:
 # use a parameter to control if the good bad classification should run again
 # set move files to be true so that the associated files like the cloud mask & xml are moved to the good directory
 if RUN_GOOD_BAD_CLASSIFER:
-    model.run_classification_model(model_path, planet_dir, planet_dir, regex_pattern= '*TOAR_model_format', move_files=True)
-# if the classification model was not run then 
+    model.sort_imagery(planet_dir, planet_dir, regex_pattern= '*TOAR_model_format', move_files=True)
+# if the classification model was not run then  set the good directory to the planet directory containing the tif files
 if not os.path.exists(good_dir):
     good_dir = planet_dir
 
@@ -114,9 +119,9 @@ if len(filtered_tiffs) == 0:
 # then intersect these shorelines with the transects (comment this line out if you are loading from a file)
 shorelines_dict = shoreline_extraction.extract_shorelines_with_reference_shoreline(good_dir,
                                                           suffix,
-                                                          model_card_path,
-                                                          ref_sl,
-                                                        extract_shorelines_settings,
+                                                          reference_shoreline=ref_sl,
+                                                        extract_shorelines_settings = extract_shorelines_settings,
+                                                        model_name = MODEL_NAME,
                                                         )
 
 # save the shoreline dictionary to a json file

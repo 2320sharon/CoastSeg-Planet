@@ -1,4 +1,5 @@
 import os
+import re
 import glob
 import json
 import shutil
@@ -10,6 +11,32 @@ import numpy as np
 from  coastseg_planet.processing import (get_tiffs_with_bad_area
 )
 from json import JSONEncoder
+
+def find_file_by_regex(
+    search_path: str, search_pattern: str = r"^config\.json$"
+) -> str:
+    """Searches for a file with matching regex in the specified directory
+
+    Args:
+        search_path (str): the directory path to search for the  file matching the search pattern
+        search_pattern (str): the regular expression pattern to search for the config file
+
+    Returns:
+        str: the file path that matched the search_pattern
+
+    Raises:
+        FileNotFoundError: if a file is not found in the specified directory
+    """
+    config_regex = re.compile(search_pattern, re.IGNORECASE)
+    for file in os.listdir(search_path):
+        if config_regex.match(file):
+            file_path = os.path.join(search_path, file)
+            return file_path
+
+    raise FileNotFoundError(
+        f"file matching pattern {search_pattern} was not found at {search_path}"
+    )
+
 
 def load_data_from_json(filepath: str) -> dict:
     """

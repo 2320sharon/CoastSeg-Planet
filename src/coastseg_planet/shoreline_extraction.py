@@ -1,44 +1,45 @@
 # Standard library imports
-import os
 import glob
+import os
 from datetime import datetime
 from typing import List
 
 # Third-party library imports
+import geopandas as gpd
+import matplotlib.lines as mlines
+import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import rasterio
-import geopandas as gpd
-import matplotlib.pyplot as plt
-import matplotlib.lines as mlines
-import matplotlib.patches as mpatches
-from tqdm import tqdm
-from skimage import transform
 import skimage.measure as measure
 import skimage.morphology as morphology
 from scipy.spatial import KDTree
 from shapely.geometry import LineString, MultiLineString, MultiPoint
+from skimage import transform
+from tqdm import tqdm
 
 # Local module imports
-from coastseg_planet import processing, model, utils
+from coastseg.extracted_shoreline import (
+    get_class_mapping,
+    get_indices_of_classnames,
+    load_merged_image_labels,
+    remove_small_objects_and_binarize,
+)
+from coastseg_planet import model, processing, utils,plotting
 from coastseg_planet.plotting import (
     create_legend,
     plot_image_with_legend,
     save_detection_figure,
-    create_class_color_mapping
 )
 from coastseg_planet.processing import (
-    read_planet_tiff,
-    get_georef,
     get_epsg_from_tiff,
-)
-from coastseg.extracted_shoreline import (
-    load_merged_image_labels,
-    remove_small_objects_and_binarize,
-    get_indices_of_classnames,
-    get_class_mapping
+    get_georef,
+    read_planet_tiff,
 )
 from coastsat import SDS_tools
+
+
 
 
 def stringify_datetime_columns(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -336,25 +337,55 @@ def convert_world2pix(
 
 
 def get_class_indices_from_model_card(npz_file,model_card_path):
+    """
+        Retrieves the class indices, land mask, and class mapping from the given model card.
+
+        Parameters:
+            npz_file (str): The path to the NPZ file.
+            model_card_path (str): The path to the model card.
+        Returns:
+            tuple: A tuple containing the following:
+                - water_classes_indices (list): The indices of the water classes.
+                - land_mask (ndarray): The land mask.
+                - class_mapping (dict): The mapping of class indices to class names.
+    """
     # get the water index from the model card
     water_classes_indices = get_indices_of_classnames(
         model_card_path, ["water", "whitewater"]
     )
-    # Sample class mapping {0:'water',  1:'whitewater', 2:'sand', 3:'rock'}
+    # Get the mapping of each label value to its class for example: Sample class mapping {0:'water',  1:'whitewater', 2:'sand', 3:'rock'}
     class_mapping = get_class_mapping(model_card_path)
 
-    # get the labels for water and land
+    # Get the land mask from the npz files. Use the water classes indices to get the water mask
     land_mask = load_merged_image_labels(npz_file, class_indices=water_classes_indices)
     
     return water_classes_indices,land_mask,class_mapping 
 
 def extract_shorelines_with_reference_shoreline(directory:str,
                     suffix:str,
-                    model_card_path:str,
                     reference_shoreline:np.ndarray,
                     extract_shorelines_settings:dict,
+                    model_name:str='segformer_RGB_4class_8190958',
                     cloud_mask_suffix:str = '3B_udm2_clip.tif',
                     separator = '_3B'):
+    """
+    Extracts shorelines from a directory of tiff files using a model and a reference shoreline.
+
+    Args:
+        directory (str): The directory containing the tiff files.
+        suffix (str): The suffix of the tiff files to extract shorelines from.
+
+        model_name (str): The name of the model to use for image segmentation. Defaults to 'segformer_RGB_4class_8190958'.
+        reference_shoreline (np.ndarray): The reference shoreline as a numpy array.
+        extract_shorelines_settings (dict): The settings for the shoreline extraction.
+        cloud_mask_suffix (str, optional): The suffix of the cloud mask files. Defaults to '3B_udm2_clip.tif'.
+        separator (str, optional): The separator used in the tiff file names. Defaults to '_3B'.
+
+    Returns:
+        dict: A dictionary containing the extracted shorelines.
+            Contains the keys 'dates' and 'shorelines'. 
+            'dates' is a list of date strings and 'shorelines' is a list of numpy arrays of coordinates. Each shoreline is associated with its corresponding date.
+    """
                        
     # if the directory contains no files with the suffix then return an empty dictionary
     filtered_tiffs = glob.glob(os.path.join(directory, f"*{suffix}.tif"))
@@ -376,7 +407,7 @@ def extract_shorelines_with_reference_shoreline(directory:str,
         date=processing.get_date_from_path(base_filename)
 
         # apply the model to the image
-        model.apply_model_to_image(target_path,directory,False,False)
+        model.apply_model_to_image(target_path,directory)
         # this is the file generated by the model
         npz_path = os.path.join(directory, 'out', f"{base_filename}{suffix}_res.npz")
         if not os.path.exists(npz_path):
@@ -384,6 +415,13 @@ def extract_shorelines_with_reference_shoreline(directory:str,
             continue
             
         save_path = os.path.join(directory, 'shoreline_detection_figures')
+
+        # load the model card containing the model information like label to class mapping
+        model_directory  = model.get_model_location(model_name)
+        model_card_path = utils.find_file_by_regex(
+            model_directory, r".*modelcard\.json$"
+        )
+                
         # this shoreline is in the UTM projection
         shoreline_gdf = get_shorelines_from_model_reference_shoreline(cloud_mask_path,
                                                   target_path,
@@ -454,7 +492,7 @@ def extract_shorelines(directory:str,
         date=processing.get_date_from_path(base_filename)
 
         # apply the model to the image
-        model.apply_model_to_image(target_path,directory,False,False)
+        model.apply_model_to_image(target_path,directory)
         # this is the file generated by the model
         npz_path = os.path.join(directory, 'out', f"{base_filename}{suffix}_res.npz")
         if not os.path.exists(npz_path):
@@ -666,80 +704,6 @@ def get_shorelines_from_model(planet_cloud_mask_path:str,
     )
     return filtered_shoreline_gdf
     
-
-# def get_shorelines_from_model(planet_cloud_mask_path:str,
-#                               planet_path:str,
-#                               model_card_path,
-#                               npz_file,
-#                               date,
-#                               satname,
-#                               settings,
-#                               topobathy_path=None,
-#                               save_path=os.getcwd()):
-#     """
-#     Extracts shorelines from a model using the provided inputs.
-
-#     Args:
-#         planet_cloud_mask_path (str): The file path to the planet cloud mask.
-#         planet_path (str): The file path to the planet image.
-#         model_card_path: The file path to the model card.
-#         npz_file: The file path to the npz file.
-#         date: The date of the shoreline extraction.
-#         satname: The name of the satellite.
-#         settings: The settings for the shoreline extraction.
-#         topobathy_path (str, optional): The file path to the topobathy mask. Defaults to None.
-#         save_path (str, optional): The directory path to save the extracted shoreline. Defaults to the current working directory.
-
-#     Returns:
-#         geopandas.GeoDataFrame: The extracted shoreline as a GeoDataFrame.
-#     """
-#     # get the labels for water and land
-#     water_classes_indices,land_mask,class_mapping  = get_class_indices_from_model_card(npz_file,model_card_path) 
-#     all_labels = load_image_labels(npz_file)
-#     # remove any segments of land that are too small to be considered beach from the land mask
-#     min_beach_area = 10000
-#     land_mask = remove_small_objects_and_binarize(land_mask, min_beach_area)
-#     # read the elevation msak if it exists
-#     mask_data = None
-#     if os.path.exists(topobathy_path):
-#         mask_data = processing.read_topobathy_mask(topobathy_path)
-    
-#     # find the contours of the land mask
-#     contours = simplified_find_contours(
-#         land_mask,
-#         reference_shoreline_buffer=mask_data
-#         )
-#     planet_cloud_mask = read_planet_tiff(planet_cloud_mask_path,[1])
-#     planet_RGB = read_planet_tiff(planet_path,[1,2,3])
-#     image_epsg = get_epsg_from_tiff(planet_path)
-#     if image_epsg is None:
-#         raise ValueError(f"The image does not have a valid EPSG code. Image : {planet_path}")
-#     image_epsg = int(image_epsg)
-#     # print(f"image_epsg: {image_epsg} type: {type(image_epsg)}")
-#     georef = get_georef(planet_path)
-#     shoreline = process_shoreline(contours,planet_cloud_mask,  georef, image_epsg, settings)
-#     # save the shoreline to a geojson file
-#     shoreline_gdf = create_gdf_from_shoreline(shoreline,settings["output_epsg"],date,"lines")
-#     shoreline_gdf_epsg4326 = shoreline_gdf.to_crs(epsg=4326)
-#     shoreline_geojson_path = os.path.join(save_path,f"extracted_shoreline_{date}.geojson")
-#     shoreline_gdf_epsg4326.to_file(shoreline_geojson_path, driver="GeoJSON")
-
-#     shoreline_detection_figures(
-#         planet_RGB,
-#         planet_cloud_mask,
-#         land_mask,
-#         all_labels,
-#         shoreline,
-#         image_epsg,
-#         georef,
-#         date,
-#         satname,
-#         class_mapping,
-#         settings["output_epsg"],
-#         save_path,
-#         reference_shoreline_buffer=mask_data
-#     )
-#     return shoreline_gdf
 
 def process_shoreline(
     contours, cloud_mask, im_nodata, georef, image_epsg, settings, date, **kwargs
@@ -960,21 +924,21 @@ def shoreline_detection_figures(
 
     
     # create a legend for the class colors and the shoreline
-    all_class_color_mapping = create_class_color_mapping(all_labels)
+    all_class_color_mapping = plotting.create_class_color_mapping(all_labels)
     # the class mapping has the labels as str instead of int so we need to convert them to int
     class_mapping = {int(k):v for k,v in class_mapping.items()}
     all_classes_legend = create_legend(
         class_mapping,all_class_color_mapping, additional_patches=additional_legend_items
     )
 
-    class_color_mapping = create_class_color_mapping(merged_labels)
+    class_color_mapping = plotting.create_class_color_mapping(merged_labels)
     merged_classes_legend = create_legend(
         class_mapping={0: "other", 1: "water"},
         color_mapping=class_color_mapping,
         additional_patches=additional_legend_items,
     )
 
-    class_color_mapping = create_class_color_mapping(merged_labels)
+    class_color_mapping = plotting.create_class_color_mapping(merged_labels)
     fig = plot_image_with_legend(im_ms, 
                                  merged_labels,
                                  all_labels,

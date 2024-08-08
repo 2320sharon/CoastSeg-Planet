@@ -1,0 +1,85 @@
+{
+	"DETAILS": {
+	"NAME": "Doodleverse/CoastSeg Segformer models for 4-class (water, whitewater, sediment and other) segmentation of Sentinel-2 and Landsat-7/8 3-band (RGB) images of coasts.",
+    "DATE": "2023-06-07",
+    "URL":"10.5281/zenodo.7933015",
+    "CITATION":"Buscombe, D. (2022) Doodleverse/Segmentation Zoo Res-UNet models for 4-class (water, whitewater, sediment and other) segmentation of Sentinel-2 and Landsat-7/8 3-band (RGB) images of coasts. Zenodo data release 10.5281/zenodo.7933015",
+    "QUERIES": "https://github.com/Doodleverse/segmentation_zoo/issues",
+    "CREDIT":"Daniel Buscombe, @MARDAScience",
+    "INTENDED_PURPOSE":"Landsat-7/8 and Sentinel-2 satellite image segmentation",
+    "KEYWORDS": {
+      "1": "Landsat",
+      "2": "Landsat-8",
+      "3": "Landsat-7",
+      "4": "Sentinel-2",
+	  "5": "water",
+	  "6": "whitewater",
+	  "7": "sediment",
+	  "8": "other"
+    }
+	},  
+	"DATASET1": {
+		"NAME": "Images and 4-class labels for semantic segmentation of Sentinel-2 and Landsat RGB satellite images of coasts (water, whitewater, sediment, other) ", 
+    "SOURCE": "https://doi.org/10.5281/zenodo.7335647",
+    "CITATION": "Buscombe, Daniel, Goldstein, Evan, Bernier, Julie, Bosse, Stephen, Colacicco, Rosa, Corak, Nick, Fitzpatrick, Sharon, del Jesús González Guillén, Anais, Ku, Venus, Paprocki, Julie, Platt, Lindsay, Steele, Bethel, Wright, Kyle, & Yasin, Brandon. (2022). Images and 4-class labels for semantic segmentation of Sentinel-2 and Landsat RGB satellite images of coasts (water, whitewater, sediment, other) (v1.0) [Data set]. Zenodo. https://doi.org/10.5281/zenodo.7335647",
+    "NUMBER_LABELED_IMAGES": 1018,
+		"CLASSES": {
+			"0": "water",
+			"1": "whitewater",
+			"2": "sediment",
+			"3": "other"
+		},
+		"N_DATA_BANDS": 3,
+    "BAND_NAMES": {
+      "0": "red",
+      "1": "green",
+      "2": "blue"
+    }
+	},
+	"DATASET2": {
+		"NAME": "June 2023 Supplement Images and 4-class labels for semantic segmentation of Sentinel-2 and Landsat RGB, NIR, and SWIR satellite images of coasts (water, whitewater, sediment, other) ", 
+    "SOURCE": "https://doi.org/10.5281/zenodo.8011926",
+    "CITATION": "Buscombe, Daniel (2023). June 2023 Supplement Images and 4-class labels for semantic segmentation of Sentinel-2 and Landsat RGB, NIR, and SWIR satellite images of coasts (water, whitewater, sediment, other) (v1.0) [Data set]. Zenodo. https://doi.org/10.5281/zenodo.8011926",
+    "NUMBER_LABELED_IMAGES": 283,
+		"CLASSES": {
+			"0": "water",
+			"1": "whitewater",
+			"2": "sediment",
+			"3": "other"
+		},
+		"N_DATA_BANDS": 3,
+    "BAND_NAMES": {
+      "0": "red",
+      "1": "green",
+      "2": "blue"
+    }
+	},	
+	"MODEL": {
+	"NAME": "segformer",
+	"TARGET_SIZE": [512,512]
+	},
+	"TRAINING": {
+    "BATCH_SIZE": 18,
+	"PATIENCE": 10,
+	"MAX_EPOCHS": 100,
+	"VALIDATION_SPLIT": 0.6,
+	"RAMPUP_EPOCHS": 20,
+	"SUSTAIN_EPOCHS": 0.0,
+	"EXP_DECAY": 0.9,
+	"START_LR":  1e-7,
+	"MIN_LR": 1e-7,
+	"MAX_LR": 1e-4
+	},
+	"AUGMENTATION": {
+    "AUGMENTATION_USED": true,
+	"AUG_ROT": 5,
+	"AUG_ZOOM": 0.05,
+	"AUG_WIDTHSHIFT": 0.05,
+	"AUG_HEIGHTSHIFT": 0.05,
+	"AUG_HFLIP": true,
+	"AUG_VFLIP": true,
+	"AUG_LOOPS": 10,
+	"AUG_COPIES": 5
+	}     
+}
+

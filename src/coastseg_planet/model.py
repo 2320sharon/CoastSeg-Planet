@@ -51,6 +51,37 @@ CLASS_LABEL_COLORMAPS = [
         "#3399ff",
     ]
 
+def get_model_location(model_name:str):
+    try:
+        import importlib.resources
+        from coastseg_planet import models
+        filepath_models = os.path.abspath(importlib.resources.files(models))
+
+        if not model_name :
+            raise ValueError("Model name not provided cannot load model. Please provide a model name")
+        
+        if model_name in os.listdir(filepath_models):
+            model_path = os.path.join(filepath_models,model_name)
+        if os.path.exists(model_path):
+            return model_path
+        else:
+            raise FileNotFoundError(f"Model {model_name} not found at {model_path}")
+
+    except AttributeError:
+        from importlib_resources import files
+
+        filepath_models = os.path.abspath(files(models))
+
+        if not model_name :
+            raise ValueError("Model name not provided")
+        
+        if model_name in os.listdir(filepath_models):
+            model_path = os.path.join(filepath_models,model_name)
+        if os.path.exists(model_path):
+            return model_path
+        else:
+            raise FileNotFoundError(f"Model {model_name} not found at {model_path}")
+
 def apply_model_to_dir(directory: str, suffix: str):
     """
     Apply a model to all images in a directory with a specific suffix.
@@ -63,7 +94,7 @@ def apply_model_to_dir(directory: str, suffix: str):
         None
     """
     for target_path in glob.glob(os.path.join(directory, f"*{suffix}.tif")):
-        apply_model_to_image(target_path, directory, False, False)
+        apply_model_to_image(target_path, directory)
 
 
 def read_file_for_classification_model(file_path:str,length:int=128, width:int=128,bands:int=3)->np.ndarray:
@@ -166,6 +197,33 @@ def run_model_on_image(model_path, im_path):
     
 #     return csv_path
 
+def sort_imagery(path_to_inference_imgs: str,
+                output_folder: str,
+                csv_path: str='',
+                regex_pattern: str = '',
+                move_files: bool = True,
+                save_interval: int = 10,
+                existing_csv: str = None):   
+     """
+         Sorts the imagery based into 2 folders good and bad using a classifier model and returns the path to the CSV file containing the filenames as well as the classification and score.
+
+    Args:
+        path_to_inference_imgs (str): The path to the inference images.
+        output_folder (str): The folder where the sorted images will be saved. The good bad folders will be created in this folder.
+        csv_path (str, optional): The path to the CSV file. Defaults to an empty string.
+        regex_pattern (str, optional): The regex pattern to filter the image files. Defaults to an empty string.
+        move_files (bool, optional): Whether to move the files to the output folder. Defaults to True.
+        save_interval (int, optional): The interval at which to save the sorted images. Defaults to 10.
+        existing_csv (str, optional): The path to an existing CSV file. Defaults to None.
+
+    Returns:
+        str: The path to the CSV file.
+     """
+     classifier_directory = get_model_location('classifier')
+     model_path = os.path.join(classifier_directory,'best_rgb.h5')
+     csv_path = run_classification_model(model_path, path_to_inference_imgs, output_folder, csv_path, regex_pattern, move_files, save_interval, existing_csv) 
+     return csv_path    
+
 def run_classification_model(path_to_model: str,
                              path_to_inference_imgs: str,
                              output_folder: str,
@@ -265,65 +323,6 @@ def run_classification_model(path_to_model: str,
     
     return csv_path
 
-# def run_classification_model(path_to_model:str,
-#                   path_to_inference_imgs,
-#                   output_folder,
-#                   csv_path:str,
-#                   regex_pattern='',
-#                   move_files:bool=True,):
-#     """
-#     Runs the trained model on images, classifying them either as good or bad
-#     Saves the results to a csv (image_path, class (good or bad), score (0 to 1)
-#     Sorts the images into good or bad folders
-#     Images should be '.jpg'
-#     inputs:
-#     path_to_model (str): path to the saved keras model
-#     path_to_inference_imgs (str): path to the folder containing images to run the model on
-#     output_folder (str): path to save outputs to
-#     csv_path (str): csv path to save results to
-#     move_files (bool): if True, move the images to the good and bad folders, if False, copy the images
-#     returns:
-#     csv_path (str): csv path of saved results
-#     """
-#     model = keras.models.load_model(path_to_model)
-#     # get the image paths that end in jpg, jpeg, png or tif
-#     file_types = ('*.jpg', '*.jpeg', '*.png','*tif') # the tuple of file types
-#     im_paths = []
-#     for file_extension in file_types:
-#         if regex_pattern:
-#             im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, regex_pattern+ file_extension)))
-#         else:
-#             im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, file_extension)))
-#     # print(f"im_paths: {im_paths}")
-#     im_classes = [None]*len(im_paths)
-#     im_scores = [None]*len(im_paths)
-#     i=0
-#     for im_path in im_paths:
-#         try:
-#             img_array = read_file_for_classification_model(im_path,128,128,3)
-#         except Exception as e:
-#             print(f"Error reading image: {im_path} with error: {e}")
-#             continue
-#         predictions = model.predict(img_array)
-#         score = float(keras.activations.sigmoid(predictions[0][0]))
-#         good_score = score
-#         bad_score = 1 - score
-#         if good_score>bad_score:
-#             im_classes[i] = 'good'
-#             im_scores[i] = good_score
-#         else:
-#             im_classes[i] = 'bad'
-#             im_scores[i] = bad_score
-#         i=i+1
-#     ##save results to a csv
-#     df = pd.DataFrame({'im_paths':im_paths,
-#                        'im_classes':im_classes,
-#                        'im_scores':im_scores})
-#     df.to_csv(csv_path)
-#     sort_images(csv_path,
-#                 output_folder,move=move_files)
-#     return csv_path
-
 # def read_file_for_model(file_path:str)->np.ndarray:
 #     """
 #     Reads an image file and returns it as a NumPy array, s it can be read by the model.
@@ -344,7 +343,7 @@ def run_classification_model(path_to_model: str,
 #     else:
 #         raise ValueError(f"File type not supported: {file_path}")
 
-def apply_model_to_image(input_image:str, save_path:str, TESTTIMEAUG:bool=False, OTSU_THRESHOLD:bool=False):
+def apply_model_to_image(input_image:str, save_path:str,model_name:str='segformer_RGB_4class_8190958', TESTTIMEAUG:bool=False, OTSU_THRESHOLD:bool=False):
     """
     Applies a trained model to an input image for segmentation.
     
@@ -353,21 +352,16 @@ def apply_model_to_image(input_image:str, save_path:str, TESTTIMEAUG:bool=False,
     Args:
         input_image (str): The path to the input image file.
         save_path (str): The path to the directory where the output image will be saved.
+        model_name (str, optional): The name of the model to use. Defaults to 'segformer_RGB_4class_8190958'.
         TESTTIMEAUG (bool, optional): Whether to apply test-time augmentation. Defaults to False.
         OTSU_THRESHOLD (bool, optional): Whether to use Otsu thresholding. Defaults to False.
 
     Returns:
         None
     """
-    
-    # check the range of the image to be sure it is between 0 and 255
-    
-    # directory to save outputs to temporarily hard coded for now
-    # sample_direc = r'C:\development\coastseg-planet\CoastSeg-Planet\output_zoo'
-    # hard code this for now.... segformer only
-    weights_directory = r'C:\development\doodleverse\coastseg\CoastSeg\src\coastseg\downloaded_models\segformer_RGB_4class_8190958'
+    model_directory = get_model_location(model_name)
     # get the model weights needed to initialize the model
-    weights_list = get_weights_list(weights_directory)
+    weights_list = get_weights_list(model_directory)
     # load the model
     model, model_list, config_files, model_types = get_model(weights_list)
     # load the dictionary of the configuration options for the model
@@ -582,7 +576,6 @@ def get_image(file_path:str, N_DATA_BANDS:int, TARGET_SIZE:int, MODEL:str):
     Raises:
         None
     """
-    print(f"N_DATA_BANDS: {N_DATA_BANDS}")
     if N_DATA_BANDS <= 3:
         image, w, h, bigimage = seg_file2tensor_3band(file_path, TARGET_SIZE)
     else:
@@ -719,7 +712,7 @@ def save_segmentation_results(segfile, color_label):
     Returns:
         None
     """
-    print(f"saving segmentation results to {segfile}")
+    # print(f"saving segmentation results to {segfile}")
     imsave(segfile, (color_label).astype(np.uint8), check_contrast=False)
 
 def generate_color_label(est_label, bigimage, class_label_colormap):
@@ -874,7 +867,7 @@ def do_seg(
     
     if WRITE_MODELMETADATA:
         metadatadict["grey_label"] = est_label
-        print(f"writing metadata to {segfile.replace('_predseg.png', '_res.npz')}")
+        # print(f"writing metadata to {segfile.replace('_predseg.png', '_res.npz')}")
         np.savez_compressed(segfile.replace('_predseg.png', '_res.npz'), **metadatadict)
 
     if profile == 'full':
