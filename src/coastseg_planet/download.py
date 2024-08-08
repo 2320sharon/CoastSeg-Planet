@@ -262,7 +262,7 @@ async def download_order_by_name(
         start_date (str, optional): The start date for the order. Defaults to an empty string.
         end_date (str, optional): The end date for the order. Defaults to an empty string.
         overwrite (bool, optional): Whether to overwrite an existing order with the same name. Defaults to False.
-        order_states (list, optional): The list of states of the order. Defaults to ['success'].
+        order_states (list, optional): The list of states of the order. Defaults to ['success', 'running'].
         product_bundle (str, optional): The product bundle to download. Defaults to "ortho_analytic_4b".
         clip (bool, optional): Whether to clip the images to the ROI. Defaults to True.
         toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
@@ -277,10 +277,13 @@ async def download_order_by_name(
     Returns:
         None
     """
-    if order_states is None:
+    if order_states is None or order_states == []:
         order_states = ["success", "running"]
     elif isinstance(order_states, str):
         order_states = [order_states]
+
+    if overwrite and continue_existing:
+        raise ValueError("overwrite and continue_existing cannot both be True. As an order cannot be overwritten and continued at the same time. Please set one to False")
 
 
     async with planet.Session() as sess:
@@ -311,7 +314,18 @@ async def download_order_by_name(
 
 def get_ids(items):
     """
-    Get a list of Image IDs grouped based on the acquired date of the items.
+    Get a 1D list of Image IDs grouped based on the acquired date of the items.
+    These ids are ordered by acquired date.
+
+    For example, if the items are:
+    [
+        {"id": 1, "properties": {"acquired": "2023-06-27"}},
+        {"id": 2, "properties": {"acquired": "2023-06-28"}},
+        {"id": 3, "properties": {"acquired": "2023-06-27"}},
+        {"id": 4, "properties": {"acquired": "2023-06-28"}},
+    ]
+
+    The output would be [1, 3,2, 4].
 
     Args:
         items (list): A list of items.
@@ -320,10 +334,14 @@ def get_ids(items):
         list: A list of Image IDs.
 
     """
+    if items == [] or items is None:
+        return []
     acquired_dates = [get_acquired_date(item) for item in items]
     unique_acquired_dates = set(acquired_dates)
+    # sort the unique acquired dates
+    unique_acquired_dates = sorted(unique_acquired_dates)
     ids_by_date = get_ids_by_date(items)
-    # list Image IDs grouped based on Acquired Date
+    # list Image IDs grouped based on Acquired Date. This is a nested list ex. [[1,2],[3,4]]
     ids = [ids_by_date[j] for j in list(unique_acquired_dates)]
     # flattens the nested list into a single list ex. [[1,2],[3,4]] -> [1,2,3,4]
     ids = [j for id in ids for j in id]
@@ -428,7 +446,8 @@ def get_ids_by_date(items):
     """
     acquired_dates = [get_acquired_date(item) for item in items]
     unique_acquired_dates = set(acquired_dates)
-    ids_by_date = dict((d, get_date_item_ids(d, items)) for d in unique_acquired_dates)
+    # creates a dictionary where the keys are acquired dates and the values are lists of item IDs
+    ids_by_date = dict((unique_date, get_date_item_ids(unique_date, items)) for unique_date in unique_acquired_dates)
     return ids_by_date
 
 async def create_and_download(client, request, download_path: str):
@@ -490,6 +509,9 @@ async def get_order_ids_by_name(client, order_name: str, states: Optional[List[s
     for order in orders_list:
         if pattern.match(order["name"]) and order["state"] in states:
             matching_orders.append(order["id"])
+
+    # remove duplicate order ids
+    matching_orders = list(set(matching_orders))
 
     if not matching_orders:
         print(f"Order not found with name or pattern {order_name} and states {states}")
@@ -621,8 +643,15 @@ async def get_item_list(roi, start_date, end_date,**kwargs):
         # create a search request that returns 100 items per page see this for an example https://github.com/planetlabs/notebooks/blob/master/jupyter-notebooks/Data-API/planet_python_client_introduction.ipynb
         items = cl.run_search(search_id=request["id"],limit=10000)
         item_list = [i async for i in items]
+
+        if item_list == []:
+            print(f"No items found that matched the search criteria were found.\n\
+                  start_date: {start_date}\n\
+                  end_date: {end_date}\n\
+                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
+        
         # print(f"items: {item_list}")
-        # get the ids of the items group by acquired date
+        # get the ids of the items group by acquired date, then flattened into a 1D list.
         ids = get_ids(item_list)
         return ids
 
@@ -727,8 +756,13 @@ async def make_order_and_download(
         None
     """
 
+    # Ensure cloud_cover is in kwargs with a default value of 0.99
+    kwargs.setdefault('cloud_cover', 0.99)
+
     async with planet.Session() as sess:
         cl = sess.client("data")
+
+        
 
         combined_filter = create_combined_filter(roi, start_date, end_date,**kwargs)
 
@@ -739,6 +773,16 @@ async def make_order_and_download(
 
         items = cl.run_search(search_id=request["id"],limit=10000)
         item_list = [i async for i in items]
+        if item_list == []:
+            print(f"No items found that matched the search criteria were found.\n\
+                  start_date: {start_date}\n\
+                  end_date: {end_date}\n\
+                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
+             
+            raise ValueError(f"No items found that matched the search criteria were found.\n\
+                  start_date: {start_date}\n\
+                  end_date: {end_date}\n\
+                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
         # get the ids of the items group by acquired date
         ids = get_ids(item_list)
         print(f"Requesting {len(ids)} items")
