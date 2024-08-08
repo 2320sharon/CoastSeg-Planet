@@ -469,8 +469,14 @@ async def get_order_ids_by_name(client, order_name: str, states: Optional[List[s
     if states is None:
         states = ["success"]
 
+    # returns a list of dictionaries containing the order details
     orders_list = await collect(client.list_orders())
     matching_orders = []
+
+    if not orders_list :
+        print("No orders found")
+        return matching_orders
+    
 
     # First, try to find exact matches
     for order in orders_list:
