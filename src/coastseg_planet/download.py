@@ -496,9 +496,15 @@ async def get_order_ids_by_name(client, order_name: str, states: Optional[List[s
         print("No orders found")
         return matching_orders
     
+    print(f"Found {len(orders_list)} orders")
+    print(orders_list)
+
 
     # First, try to find exact matches
     for order in orders_list:
+        print(f"order: {order}")
+        if "name" not in order or "state" not in order:
+            continue
         if order["name"] == order_name and order["state"] in states:
             matching_orders.append(order["id"])
 
@@ -507,6 +513,8 @@ async def get_order_ids_by_name(client, order_name: str, states: Optional[List[s
     pattern = re.compile(order_regex)
 
     for order in orders_list:
+        if "name" not in order or "state" not in order:
+            continue  
         if pattern.match(order["name"]) and order["state"] in states:
             matching_orders.append(order["id"])
 
