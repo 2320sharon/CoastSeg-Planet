@@ -331,10 +331,6 @@ async def download_order_by_name(
     async with planet.Session() as sess:
         cl = sess.client("orders")
 
-        # await make_order_and_download(
-        #     roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister,min_area_percentage=min_area_percentage, **kwargs
-        # )
-
         # check if an existing order with the same name exists
         order_ids = await get_order_ids_by_name(
             cl, order_name, states=order_states
@@ -406,7 +402,7 @@ def filter_ids_by_date(items:List[dict],month_filter:List[str])->List[str]:
     return ids_by_date
 
 
-def get_ids(items,month_filter:list):
+def get_ids(items,month_filter:list=None)->List[str]:
     """
     Get a 1D list of Image IDs grouped based on the acquired date of the items.
     These ids are ordered by acquired date.
@@ -919,6 +915,7 @@ async def make_order_and_download(
         print(f"tools: {tools}")
         print(f"id_to_coregister: {id_to_coregister} Apply Coregistration: {coregister}")
         # Process orders in batches
+        print(f"Total number of scenes to download: {len(ids)}")
         await process_orders_in_batches(cl, ids, tools, download_path, order_name,product_bundle=product_bundle)
 
 async def get_existing_order(
