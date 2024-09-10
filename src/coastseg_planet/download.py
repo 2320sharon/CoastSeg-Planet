@@ -331,10 +331,15 @@ async def download_order_by_name(
     async with planet.Session() as sess:
         cl = sess.client("orders")
 
+        # await make_order_and_download(
+        #     roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister,min_area_percentage=min_area_percentage, **kwargs
+        # )
+
         # check if an existing order with the same name exists
         order_ids = await get_order_ids_by_name(
             cl, order_name, states=order_states
         )
+        print(f"Matching Order ids: {order_ids}")
         if order_ids != [] and not overwrite:
             print(f"Order with name {order_name} already exists. Downloading...")
             await get_multiple_existing_orders(
@@ -365,8 +370,43 @@ async def download_order_by_name(
                 roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister,min_area_percentage=min_area_percentage, **kwargs
             )
 
+def filter_ids_by_date(items:List[dict],month_filter:List[str])->List[str]:
+    """
+    Get a dictionary of Image IDs grouped based on the acquired date of the items.
+    These ids are ordered by acquired date.
 
-def get_ids(items):
+    args:
+        items (list): A list of items.
+        month_filter (list): A list of months to filter the acquired dates by.
+    
+    returns:
+        dict: A dictionary of Image IDs grouped by acquired date.
+        ex. {"2023-06-27":[1234a,33445g],"2023-06-28":[2345c,4f465c]}
+    """
+    if not month_filter:
+        month_filter= [str(i).zfill(2) for i in range(1,13)]
+
+    acquired_dates = [get_acquired_date(item) for item in items]
+    unique_acquired_dates = set(acquired_dates)
+
+    # filter the unique acquired dates based on the month filter
+    unique_acquired_dates = [date for date in unique_acquired_dates if date.split("-")[1] in month_filter]
+
+    # print the first 2 unique acquired dates
+    # print(f"Unique acquired dates: {list(unique_acquired_dates)[:2]}")
+    # sort the unique acquired dates
+    unique_acquired_dates = sorted(unique_acquired_dates)
+    ids_by_date = get_ids_by_date(items)
+
+    # for each key in the dictionary drop the keys whose month is not in the month filter
+    for key in list(ids_by_date.keys()):
+        if key.split("-")[1] not in month_filter:
+            ids_by_date.pop(key)
+
+    return ids_by_date
+
+
+def get_ids(items,month_filter:list):
     """
     Get a 1D list of Image IDs grouped based on the acquired date of the items.
     These ids are ordered by acquired date.
@@ -388,17 +428,21 @@ def get_ids(items):
         list: A list of Image IDs.
 
     """
+    if not month_filter:
+        month_filter= [str(i).zfill(2) for i in range(1,13)]
+
     if items == [] or items is None:
         return []
-    acquired_dates = [get_acquired_date(item) for item in items]
-    unique_acquired_dates = set(acquired_dates)
-    # sort the unique acquired dates
-    unique_acquired_dates = sorted(unique_acquired_dates)
-    ids_by_date = get_ids_by_date(items)
-    # list Image IDs grouped based on Acquired Date. This is a nested list ex. [[1,2],[3,4]]
-    ids = [ids_by_date[j] for j in list(unique_acquired_dates)]
+    # get a dict of each date in format 'YYYY-MM-DD' where each entry is the list of IDS that match this date
+    ids_by_date = filter_ids_by_date(items,month_filter)
+    # Get the IDs assoicated with each date from the dictionary. This is a nested list ex. [[1,2],[3,4]]
+    ids = [ids_by_date.values()]
     # flattens the nested list into a single list ex. [[1,2],[3,4]] -> [1,2,3,4]
     ids = [j for id in ids for j in id]
+
+    # flatten the list of lists into a single list
+    ids = [item for sublist in ids for item in sublist]
+
     return ids
 
 def get_image_id_with_lowest_cloud_cover(items):
@@ -422,7 +466,7 @@ def get_image_id_with_lowest_cloud_cover(items):
         
 
 
-def create_combined_filter(roi: str, time1: str, time2: str, cloud_cover: float = 0.99,product_bundles="basic_analytic_4b") -> Dict[str, Any]:
+def create_combined_filter(roi: str, time1: str, time2: str, cloud_cover: float = 0.99,product_bundles="basic_analytic_4b",**kwargs) -> Dict[str, Any]:
     """
     Create a combined filter for downloading planet imagery.
 
@@ -678,7 +722,9 @@ async def get_item_list(roi, start_date, end_date,**kwargs):
 
     KwArgs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
-    
+        month_filter (list): A list of months to filter the acquired dates by. 
+            Pass a list of months in the format ['01','02','03'] to filter the acquired dates by the months in the list.
+            Defaults to an empty list which means all months are included.
     
     """
     defaults = {
@@ -711,7 +757,10 @@ async def get_item_list(roi, start_date, end_date,**kwargs):
         
         # print(f"items: {item_list}")
         # get the ids of the items group by acquired date, then flattened into a 1D list.
-        ids = get_ids(item_list)
+        if "month_filter" in kwargs:
+            ids = get_ids(item_list,kwargs["month_filter"])
+        else:
+            ids = get_ids(item_list)
         return ids
 
 
@@ -843,14 +892,22 @@ async def make_order_and_download(
                   start_date: {start_date}\n\
                   end_date: {end_date}\n\
                   cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
-        
+
         # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
         print(f"Number of items to download before filtering by area: {len(item_list)}")
         item_list = filter_items_by_area(roi, item_list,min_area_percentage)
+
         print(f"Number of items to download after filtering by area: {len(item_list)}")
-        # get the ids of the items group by acquired date
-        ids = get_ids(item_list)
+        # gets the IDs of the items to be downloaded based on the acquired date (not order by date though)
+        if "month_filter" in kwargs:
+            print(f"Applying Month filter: {kwargs['month_filter']}")
+            ids = get_ids(item_list,kwargs["month_filter"])
+        else:
+            ids = get_ids(item_list)
+
+        
         print(f"Requesting {len(ids)} items")
+
         id_to_coregister = ids[0]
         if coregister:
             id_to_coregister = get_image_id_with_lowest_cloud_cover(item_list)
