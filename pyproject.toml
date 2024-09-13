@@ -18,12 +18,10 @@ keywords = [
 # find` directive with `include` or `exclude`
 description = "An interactive python package for satellite derived shoreline workflows using Planet imagery."
 dependencies = [
-  "coastseg",
+  "scikit-image",
   "planet",
   "rasterio",
-  "arosics",
-  "bathyreq",
-  "imageio[ffmpeg]"
+  "imageio[ffmpeg]", # coastseg is commented out for now to avoid install issues for users just downloading data
 ]
 # dependencies = [
 #   "h5py>=3.10.0",
@@ -36,7 +34,6 @@ dependencies = [
 #   "jupyterlab>=3.0.0",
 #   "xarray",
 #   "arosics",
-#   # "geowombat", # geowombat does not have a pip package
 #   ]
 license = { file="LICENSE" }
 requires-python = ">=3.10"

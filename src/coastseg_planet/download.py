@@ -17,7 +17,6 @@ import numpy as np
 import geopandas as gpd
 from shapely import geometry
 from typing import Optional, Tuple
-import bathyreq
 from skimage.transform import resize
 import rasterio
 from typing import Optional
@@ -118,6 +117,16 @@ def download_topobathy(
     Returns:
     - str: The path to the saved or existing raster file.
     """
+
+    # attempt to import bathyreq and if it fails tell user to install it
+    try:
+        import bathyreq
+    except ImportError:
+        raise ImportError(
+            "bathyreq is not installed. Please install it by running 'pip install bathyreq'"
+        )
+
+
     # Ensure save directory exists
     os.makedirs(save_dir, exist_ok=True)
     raster_path = os.path.join(save_dir, f"{site}_topobathy.tif")
