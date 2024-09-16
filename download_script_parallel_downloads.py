@@ -28,7 +28,7 @@ order = Order(
     end_date=end_date,
     cloud_cover=CLOUD_COVER,
     destination=os.path.join(os.getcwd(), "downloads", order_name),
-    continue_existing=True,
+    continue_existing=False,
     min_area_percentage=0.25,
 
 ).get_order()
@@ -45,11 +45,12 @@ order2 = Order(
     end_date=end_date,
     cloud_cover=CLOUD_COVER,
     destination=os.path.join(os.getcwd(), "downloads", order_name),
-    continue_existing=True,
+    continue_existing=False,
     min_area_percentage=0.25,
 
 ).get_order()
 
+# I would not recommend more than 5 orders at a time. Planet API has a limit of 5 simultaneous downloads
 # make the list of orders
 order_list = [order, order2]
 
