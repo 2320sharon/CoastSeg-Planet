@@ -24,6 +24,47 @@ from typing import List
 from datetime import datetime
 from typing import Dict, Any
 import shutil
+from tqdm.asyncio import tqdm_asyncio
+
+async def download_multiple_orders_in_parallel(order_list):
+    """
+    Takes a list of dictionaries representing orders and downloads them in parallel,
+    with a progress bar showing the progress of all orders.
+
+    Args:
+        order_list (list of dicts): A list of dictionaries, where each dictionary is formatted like the output of `make_order_dict`.
+
+    Returns:
+        None
+    """
+    
+    tasks = []
+    
+    for order in order_list:
+        # Load ROI GeoDataFrame from file path provided in the order dictionary
+        roi = gpd.read_file(order["roi_path"])
+
+        print(f"Order received with name {order['order_name']}. Downloading...")
+
+        # Prepare the download task for this order
+        task = download_order_by_name(
+            order_name=order["order_name"],
+            output_path=order["destination"],
+            roi=roi,
+            start_date=order["start_date"],
+            end_date=order["end_date"],
+            cloud_cover=order.get("cloud_cover", 0.7),  # Default to 0.7 if not provided
+            min_area_percentage=order.get("min_area_percentage", 0.7),  # Default to 0.7 if not provided
+            coregister=order.get("coregister", False),
+            coregister_id=order.get("coregister_id", ""),
+            product_bundle="analytic_udm2",
+            continue_existing = order.get("continue_existing", False),
+        )
+
+        tasks.append(task)
+    
+    # Run all download tasks concurrently with progress tracking
+    await tqdm_asyncio.gather(*tasks, total=len(tasks), desc="Downloading Orders")
 
 
 def filter_items_by_area(roi_gdf:gpd.GeoDataFrame,
@@ -296,10 +337,11 @@ async def download_order_by_name(
     overwrite: bool = False,
     continue_existing: bool = False,
     order_states: list = None,
-    product_bundle: str = "ortho_analytic_4b",
+    product_bundle: str = "analytic_udm2",
     clip:bool = True,
     toar:bool = True,
     coregister:bool = False,
+    coregister_id:str = "",
     min_area_percentage:float = 0.5,
     **kwargs,
 ):
@@ -318,6 +360,7 @@ async def download_order_by_name(
         clip (bool, optional): Whether to clip the images to the ROI. Defaults to True.
         toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
         coregister (bool, optional): Whether to coregister the images. Defaults to False.
+        coregister_id (str, optional): The ID of the image to coregister with. Defaults to "".
         min_area_percentage (float, optional): The minimum area percentage of the ROI's area that must be covered by the images to be downloaded. Defaults to 0.5.
     kwargs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
@@ -329,6 +372,7 @@ async def download_order_by_name(
     Returns:
         None
     """
+
     if order_states is None or order_states == []:
         order_states = ["success", "running"]
     elif isinstance(order_states, str):
@@ -372,7 +416,7 @@ async def download_order_by_name(
                 print(f"Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS")
 
             await make_order_and_download(
-                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister,min_area_percentage=min_area_percentage, **kwargs
+                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister,coregister_id = coregister_id,min_area_percentage=min_area_percentage, **kwargs
             )
 
 def filter_ids_by_date(items:List[dict],month_filter:List[str])->List[str]:
@@ -817,10 +861,25 @@ async def process_order_batch(cl, ids_batch, tools, order_name_base, download_pa
     # Create and download the order
     await create_and_download(cl, request, download_path)
 
-async def process_orders_in_batches(cl, ids: List[str], tools, download_path, order_name_base,product_bundle = "ortho_analytic_4b"):
-    # Split the ids list into batches of 500 or less
-    id_batches = [ids[i:i + 500] for i in range(0, len(ids), 500)]
+async def process_orders_in_batches(cl, ids: List[str], tools, download_path, order_name_base,product_bundle = "ortho_analytic_4b",id_to_coregister:str = ""):
+    # Split the ids list into batches of 499 or less
+    if id_to_coregister:
+        print(f"adding the id to coregister {id_to_coregister} to each batch of ids")
+        # add the id_to_coregister to each batch of ids
+        id_batches = [ids[i:i + 499] + [id_to_coregister] for i in range(0, len(ids), 499)]
+    else:
+        id_batches = [ids[i:i + 499] for i in range(0, len(ids), 499)]
     
+    # # for each batch check if the id_to_coregister is in the batch
+    # for i,ids_batch in enumerate(id_batches):
+    #     if id_to_coregister:
+    #         if id_to_coregister not in ids_batch:
+    #             raise ValueError(f"Coregister ID {id_to_coregister} not found in the list of IDs to download")
+    #         else:
+    #             print(f"Coregister ID {id_to_coregister} found in the list of IDs to download")
+    #     print(f"Batch {i + 1} of {len(id_batches)}: {len(ids_batch)} items")
+
+
     # Create tasks for each batch
     tasks = []
     for i, ids_batch in enumerate(id_batches):
@@ -845,6 +904,7 @@ async def make_order_and_download(
     clip: bool = True,
     toar: bool = True,
     coregister: bool = False,
+    coregister_id: str = "",
     product_bundle:str = "ortho_analytic_4b",
     min_area_percentage:float = 0.5,
     **kwargs,
@@ -861,6 +921,7 @@ async def make_order_and_download(
         clip (bool, optional): Whether to clip the images to the ROI. Defaults to True.
         toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
         coregister (bool, optional): Whether to coregister the images. Defaults to False.   
+        coregister_id (str, optional): The ID of the image to coregister with. Defaults to "".
         product_bundle (str, optional): The product bundle to download. Defaults to "ortho_analytic_4b".
         min_area_percentage (float, optional): The minimum area percentage of the ROI's area that must be covered by the images to be downloaded. Defaults to 0.5.
 
@@ -913,19 +974,27 @@ async def make_order_and_download(
         
         print(f"Requesting {len(ids)} items")
 
-        id_to_coregister = ids[0]
-        if coregister:
-            id_to_coregister = get_image_id_with_lowest_cloud_cover(item_list)
+
+
+        # Get the ID to coregister with
+        if not coregister_id:
+            id_to_coregister = ids[0]
+            if coregister:
+                id_to_coregister = get_image_id_with_lowest_cloud_cover(item_list)
+        else:
+            id_to_coregister = coregister_id
+            if id_to_coregister not in ids:
+                raise ValueError(f"Coregister ID {id_to_coregister} not found in the list of IDs to download")
         # create a client for the orders API
         cl = sess.client("orders")
 
         # get the tools to be applied to the order
         tools = get_tools(roi_dict, clip, toar, coregister, id_to_coregister)
-        print(f"tools: {tools}")
-        print(f"id_to_coregister: {id_to_coregister} Apply Coregistration: {coregister}")
+        # analytic_udm2
+        # print(f"id_to_coregister: {id_to_coregister} Apply Coregistration: {coregister}")
         # Process orders in batches
         print(f"Total number of scenes to download: {len(ids)}")
-        await process_orders_in_batches(cl, ids, tools, download_path, order_name,product_bundle=product_bundle)
+        await process_orders_in_batches(cl, ids, tools, download_path, order_name,product_bundle=product_bundle,id_to_coregister=id_to_coregister)
 
 async def get_existing_order(
     client, order_id:str, download_path="downloads", continue_existing=False

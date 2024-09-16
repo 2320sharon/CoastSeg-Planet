@@ -8,6 +8,52 @@ from coastseg_planet.processing import get_base_filename
 from coastseg_planet import utils, visualize
 from typing import Optional
 
+import logging
+
+
+def setup_logger(log_folder, log_filename='app.log'):
+    """
+    Sets up a logger that logs messages to a file in the specified folder.
+    If the log file already exists, it increments the file name to avoid overwriting.
+
+    Parameters:
+    - log_folder: The folder where the log file should be created.
+    - log_filename: The base name of the log file (default is 'app.log').
+
+    Returns:
+    - logger: Configured logger instance.
+    """
+    # Ensure the log folder exists
+    os.makedirs(log_folder, exist_ok=True)
+
+    # Determine the log file path
+    log_file_path = os.path.join(log_folder, log_filename)
+
+    # Increment the log file name if it already exists
+    base, ext = os.path.splitext(log_file_path)
+    counter = 1
+    while os.path.exists(log_file_path):
+        log_file_path = f"{base}_{counter}{ext}"
+        counter += 1
+
+    # Configure the logging system
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(log_file_path),  # Log messages to the determined file path
+            logging.StreamHandler()  # Also log messages to the console
+        ]
+    )
+
+    # Create the logger
+    logger = logging.getLogger(__name__)
+    return logger
+
+# logger = setup_logger(r'D:\3_development\1_coregistration_experiments\2_coregister_arosic','coregister.txt')
+
+
+
 def get_cpus():
     num_cpus = os.cpu_count()
     print(f"Number of CPUs available: {num_cpus}")
@@ -46,10 +92,16 @@ def generate_coreg_movie(
         overwrite=overwrite,
         **kwargs,
     )
-    # # make a movie of the coregistered tiffs
-    tiff_files = sorted(glob.glob(os.path.join(input_dir, f"*{output_suffix}")))
+    
     coreg_str = "local" if use_local else "global"
-    output_movie = os.path.join(input_dir, f"{base_movie_name}_{coreg_str}.mp4")
+    # # make a movie of the coregistered tiffs
+    if kwargs.get("output_folder"):
+        output_folder = kwargs["output_folder"]
+        output_movie = os.path.join(output_folder, f"{base_movie_name}.mp4")
+        tiff_files = sorted(glob.glob(os.path.join(output_folder, f"*{output_suffix}")))
+    else:
+        tiff_files = sorted(glob.glob(os.path.join(input_dir, f"*{output_suffix}")))
+        output_movie = os.path.join(input_dir, f"{base_movie_name}_{coreg_str}.mp4")
     if os.path.exists(output_movie):
         os.remove(output_movie)
     visualize.create_movie_from_tiffs(tiff_files, output_movie)
@@ -65,7 +117,7 @@ def coregister_directory(
     directory: str,
     landsat_path: str,
     landsat_cloud_mask_path: str,
-    input_suffix: str = "_AnalyticMS_toar_clip.tif",
+    input_suffix: str ="_TOAR_model_format.tif", #"_AnalyticMS_toar_clip.tif",
     output_suffix: str = "_TOAR_processed_coregistered.tif",
     separator="_3B",
     bad_mask_suffix:str = "udm2_clip_combined_mask.tif",
@@ -94,10 +146,10 @@ def coregister_directory(
     defaults = {
         "max_shift": 2,
         "align_grids": True,
-        "grid_res": 100,  # Grid points are 30 meters apart (the lower this value the longer it takes)
+        "grid_res": 10,  # Grid points are 30 meters apart (the lower this value the longer it takes)
         "v": True,  # verbose mode
         "q": False,  # quiet mode
-        "min_reliability": 50,  # minimum reliability of the tie points is 50%
+        "min_reliability": 70,  # minimum reliability of the tie points is 70%
         "ignore_errors": False,  # Recommended to set to True for batch processing
         "progress": True,
         "out_crea_options": [
@@ -107,6 +159,12 @@ def coregister_directory(
         "CPUs": get_cpus() / 2,
     }
     defaults.update(kwargs)
+
+    # write the defaults out to file
+    with open(os.path.join(directory, "coregister_defaults.txt"), "w") as f:
+        for key, value in defaults.items():
+            f.write(f"{key} : {value}\n")
+
     inputs_paths = glob.glob(os.path.join(directory, f"*{separator}{input_suffix}"))
     if len(inputs_paths) == 0:
         print(f"No files found with suffix {input_suffix} in {directory}")
@@ -152,7 +210,7 @@ def coregister_tiff(
     landsat_path: str,
     landsat_cloud_mask_path: str,
     output_suffix: str = "_TOAR_processed_coregistered.tif",
-    bad_mask_suffix: str = "udm2_clip_combined_mask.tif",
+    bad_mask_suffix: str = "udm2_clip_combined_mask.tif", # udm2_clip_combined_mask # original : "udm2_clip_combined_mask.tif"
     separator: str = "_3B",
     use_local: bool = True,
     overwrite: bool = False,
@@ -187,11 +245,19 @@ def coregister_tiff(
     target_cloud_mask_path = utils.get_file_path(parent_dir, base_filename, regex=f"*{bad_mask_suffix}")
     
     if not target_cloud_mask_path:
-        print(f"Could not find cloud mask for {os.path.basename(input_path)}")
+        print(f"Could not find cloud mask for {os.path.basename(input_path)} at {parent_dir}")
         return None
     
     # This is the location of the coregistered image
-    output_path = os.path.join(parent_dir, f"{base_filename}{separator}{output_suffix}")
+    if kwargs.get("output_folder"):
+        output_folder = kwargs["output_folder"]
+        output_path = os.path.join(output_folder, f"{base_filename}{separator}{output_suffix}")
+    else:
+        output_path = os.path.join(parent_dir, f"{base_filename}{separator}{output_suffix}")
+
+    # remove output_folder from kwargs
+    if "output_folder" in kwargs:
+        del kwargs["output_folder"]
 
     # return the output path if it already exists and overwrite is not set
     if not overwrite and os.path.exists(output_path):
@@ -210,6 +276,7 @@ def coregister_tiff(
                 **kwargs,
             )
         else:
+            print(f"Applying globl coregistration to {input_path}")
             # perform global coregistration
             coregistered_target_path = coregister_arosics_global(
                 input_path,
@@ -277,6 +344,11 @@ def coregister_arosics_global(
     # Update the defaults with the user-provided kwargs
     defaults.update(kwargs)
 
+    # write the updates to a file
+    with open(os.path.join(os.path.dirname(output_path), "coregister_defaults.txt"), "w") as f:
+        for key, value in defaults.items():
+            f.write(f"{key} : {value}\n")
+
     if "grid_res" in kwargs:
         # remove this parameter because it is not used in the global coregistration
         del defaults["grid_res"]
@@ -301,8 +373,36 @@ def coregister_arosics_global(
         mask_baddata_ref=reference_cloud_mask,
         **defaults,
     )
+
+    # logger.info(f"CR: {CR}")
+    # logger.info(f"CR.calculate_spatial_shifts() : {CR.calculate_spatial_shifts()}")
+    # logger.info(f"ssim_improved : {CR.ssim_improved}")
+    # logger.info(f"CR: {CR}")
+
     print(f"ssim_improved : {CR.ssim_improved}")
-    CR.correct_shifts()
+    print(f"CR.calculate_spatial_shifts() : {CR.calculate_spatial_shifts()}")
+    # print(f"CR: {CR}")
+    try:
+        print(CR.calculate_spatial_shifts())
+    except RuntimeError as e:
+        print(f"Error calculating spatial shifts: {e}")
+        # logger.error(f"Error calculating spatial shifts: {e}")  
+    if CR.ssim_improved:
+        print(f"ssim_improved : {CR.ssim_improved} calculating spatial shifts")
+        CR.correct_shifts()
+    else:
+        print(f" ssim did not improve {CR.ssim_improved} not calculating spatial shifts")
+        # copy the original file to the output path
+        import shutil
+        shutil.copy(target_path, output_path)
+    # save the coregistration information dict to a file
+    import json
+    basename = os.path.basename(target_path).split(".")[0]
+    with open(os.path.join(os.path.dirname(output_path), f"{basename}_coregistration_info.json"), "w") as f:
+        json.dump(CR.coreg_info, f)
+    # write the CR to a file 
+
+
     return output_path
 
 
