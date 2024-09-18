@@ -6,16 +6,21 @@ import json
 
 class Order:
     
-    def __init__(self, order_name, roi_path, start_date, end_date, destination, cloud_cover=0.70, min_area_percentage=0.7, coregister=False, coregister_id="", continue_existing=False):
+    def __init__(self, order_name, roi_path, start_date, end_date, destination, cloud_cover=0.70, min_area_percentage=0.7, coregister=False, coregister_id="", continue_existing=False,month_filter:list=None):
+        if month_filter is None:
+            month_filter = ['01','02','03','04','05','06','07','08','09','10','11','12']
+        
         self.order = self.make_order_dict(
-            order_name, roi_path, start_date, end_date, destination, cloud_cover, min_area_percentage, coregister, coregister_id,continue_existing
+            order_name, roi_path, start_date, end_date, destination, cloud_cover, min_area_percentage, coregister, coregister_id,continue_existing,month_filter
         )
         self.prep_order()
 
     def get_order(self):
         return self.order
     
-    def make_order_dict(self, order_name, roi_path, start_date, end_date, destination, cloud_cover=0.70, min_area_percentage=0.7, coregister=False, coregister_id="", continue_existing=False):
+    def make_order_dict(self, order_name, roi_path, start_date, end_date, destination, cloud_cover=0.70, min_area_percentage=0.7, coregister=False, coregister_id="", continue_existing=False,month_filter=None):
+        if month_filter is None:
+            month_filter = ['01','02','03','04','05','06','07','08','09','10','11','12']
         return {
             "order_name": order_name,
             "roi_path": roi_path,
@@ -26,7 +31,8 @@ class Order:
             "coregister": coregister,
             "coregister_id": coregister_id,
             "destination": destination,
-            "continue_existing": continue_existing  # Added the continue_existing flag
+            "continue_existing": continue_existing,  
+            'month_filter': month_filter           
         }
     
 

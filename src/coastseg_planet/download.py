@@ -59,6 +59,7 @@ async def download_multiple_orders_in_parallel(order_list):
             coregister_id=order.get("coregister_id", ""),
             product_bundle="analytic_udm2",
             continue_existing = order.get("continue_existing", False),
+            month_filter = order.get("month_filter", None)
         )
 
         tasks.append(task)

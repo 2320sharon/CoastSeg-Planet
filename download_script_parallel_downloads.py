@@ -8,6 +8,8 @@ from coastseg_planet.orders import Order
 
 # 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
 CLOUD_COVER = 0.70
+month_filter=['05','06','07','08','09','10']
+
 
 # 1. Select a start and end date YYYY-MM-DD for each of the orders
 # 2. name the order
@@ -30,6 +32,7 @@ order = Order(
     destination=os.path.join(os.getcwd(), "downloads", order_name),
     continue_existing=False,
     min_area_percentage=0.25,
+    month_filter=month_filter,
 
 ).get_order()
 
@@ -47,6 +50,7 @@ order2 = Order(
     destination=os.path.join(os.getcwd(), "downloads", order_name),
     continue_existing=False,
     min_area_percentage=0.25,
+    month_filter=month_filter,
 
 ).get_order()
 
