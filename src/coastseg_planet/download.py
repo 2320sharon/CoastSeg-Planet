@@ -805,8 +805,7 @@ async def get_order_ids_by_name(client, order_name: str, states: Optional[List[s
     if not orders_list :
         print("No orders found")
         return matching_orders
-    
-    print(f"Found {len(orders_list)} orders")
+
 
     # First, try to find exact matches
     for order in orders_list:
@@ -1334,6 +1333,42 @@ async def get_existing_order(
         print("Order is not yet fulfilled.")
         return None
     
+async def download_multiple_existing_orders(order_names:list[str],output_path:str,overwrite=False,continue_existing=False,order_states:Optional[list[str]] = None):
+    if order_states is None or order_states == []:
+        order_states = ["success", "running"]
+
+    async with planet.Session() as sess:
+        cl = sess.client("orders")
+
+        # add the order ids for all the suborders, main orders etc. to a single list
+        all_order_ids = {}
+        for order_name in order_names:
+            print(f"Checking for order with name {order_name}")
+            # check if an existing order with the same name exists
+            order_ids = await get_order_ids_by_name(
+                cl, order_name, states=order_states
+            )
+            # make the output path that is associated with the order name
+            order_path = os.path.join(output_path, order_name)
+            # all_order_ids[order_name] = {'ids':order_ids,'output_path':output_path}
+            all_order_ids[order_path] = order_ids
+            print(f"Matching Order ids: {order_ids}")
+
+        print(f"all_order_ids: {all_order_ids}")
+
+
+        # according to the python sdk the orders session has rate limiting built in so this should regulate itself
+        if all_order_ids != {} and not overwrite:
+            print(f"Order with name {order_name} already exists. Downloading...")
+            # for each key in the dictionary make tasks for each order id
+            all_download_tasks = []
+            for output_path in all_order_ids.keys():
+                download_tasks = [get_existing_order(cl, order_id, output_path, continue_existing) for order_id in all_order_ids[output_path]]
+                all_download_tasks.extend(download_tasks)
+        # download_tasks = [get_existing_order(cl, order_id, output_path, continue_existing) for output_path, order_ids in all_order_ids.items() for order_id in order_ids]
+
+            return await asyncio.gather(*all_download_tasks)
+
 async def get_multiple_existing_orders(
     client, order_ids, download_path="downloads", continue_existing=False, max_concurrent_downloads=5
 ):
@@ -1356,6 +1391,26 @@ async def get_multiple_existing_orders(
             return await get_existing_order(client, order_id, download_path, continue_existing)
 
     download_tasks = [download_order_with_semaphore(order_id) for order_id in order_ids]
+    return await asyncio.gather(*download_tasks)
+
+async def download_existing_orders(
+    client, order_ids, download_path="downloads", continue_existing=False,
+):
+    """
+    Downloads the contents of multiple orders from the client in parallel.
+
+    Args:
+        client: The client object used to interact with the API.
+        order_ids: The list of order IDs to download.
+        download_path: The path where the downloaded files will be saved. Defaults to 'downloads'.
+        continue_existing: Flag indicating whether to continue downloading existing orders. Defaults to False.
+        max_concurrent_downloads: The maximum number of concurrent downloads. Defaults to 5.
+    Returns:
+        List[Optional[dict]]: A list of orders if successful, None otherwise.
+    """
+
+    download_tasks = [get_existing_order(client, order_id, download_path, continue_existing)  for order_id in order_ids]
+
     return await asyncio.gather(*download_tasks)
 
 # get the order ids
