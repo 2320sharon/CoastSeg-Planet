@@ -1,0 +1,1 @@
+sat4class_rgb_512_v5_segformer_fullmodel.h5
