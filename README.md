@@ -37,7 +37,7 @@ CoastSeg Planet is under active development so the dependencies are subjuct to c
 ```
 conda create --name coastseg_planet python=3.10 -y
 conda activate coastseg_planet
-conda install -c conda-forge coastseg arosics -y
+conda install -c conda-forge coastseg -y
 cd <location you installed coastseg-planet>
 pip install -e .
 pip install tensorflow==2.15
