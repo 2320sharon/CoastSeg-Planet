@@ -1,5 +1,7 @@
 # Standard library imports
 import os
+import importlib.resources
+from coastseg_planet.models import classifier
 
 os.environ["TF_USE_LEGACY_KERAS"] = "False" # this is needed in order for the classification model to run 
 
@@ -219,13 +221,12 @@ def sort_imagery(path_to_inference_imgs: str,
     Returns:
         str: The path to the CSV file.
      """
-     classifier_directory = get_model_location('classifier')
-     model_path = os.path.join(classifier_directory,'best_rgb.h5')
-     csv_path = run_classification_model(model_path, path_to_inference_imgs, output_folder, csv_path, regex_pattern, move_files, save_interval, existing_csv) 
+    #  classifier_directory = get_model_location('classifier')
+    #  model_path = os.path.join(classifier_directory,'best_rgb.h5')
+     csv_path = run_classification_model( path_to_inference_imgs, output_folder, csv_path, regex_pattern, move_files, save_interval, existing_csv) 
      return csv_path    
 
-def run_classification_model(path_to_model: str,
-                             path_to_inference_imgs: str,
+def run_classification_model(path_to_inference_imgs: str,
                              output_folder: str,
                              csv_path: str='',
                              regex_pattern: str = '',
@@ -239,7 +240,6 @@ def run_classification_model(path_to_model: str,
     Images should be '.jpg'.
     
     Args:
-    path_to_model (str): path to the saved keras model
     path_to_inference_imgs (str): path to the folder containing images to run the model on
     output_folder (str): path to save outputs to
     csv_path (str): csv path to save results to
@@ -251,76 +251,77 @@ def run_classification_model(path_to_model: str,
     Returns:
     csv_path (str): csv path of saved results
     """
-    model = keras.models.load_model(path_to_model)
+    with importlib.resources.path(classifier, 'best_rgb.h5') as model_path:
+        model = keras.models.load_model(model_path)
 
-    if csv_path == '':
-        csv_path = os.path.join(output_folder, 'classification_results.csv')
-    
-    # Load existing CSV if provided and get already processed image paths
-    existing_processed_paths = set()
-    if existing_csv and os.path.exists(existing_csv):
-        existing_df = pd.read_csv(existing_csv)
-        existing_processed_paths = set(existing_df['im_paths'])
-    
-    # Get the image paths that end in jpg, jpeg, png, or tif
-    file_types = ('*.jpg', '*.jpeg', '*.png', '*.tif')
-    im_paths = []
-    for file_extension in file_types:
-        if regex_pattern:
-            im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, regex_pattern + file_extension)))
-        else:
-            im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, file_extension)))
-    
-    # Filter out already processed images
-    im_paths = [im_path for im_path in im_paths if im_path not in existing_processed_paths]
-    
-    im_classes = [None] * len(im_paths)
-    im_scores = [None] * len(im_paths)
-    
-    for i, im_path in enumerate(im_paths):
-        try:
-            img_array = read_file_for_classification_model(im_path, 128, 128, 3)
-        except Exception as e:
-            print(f"Error reading image: {im_path} with error: {e}")
-            continue
+        if csv_path == '':
+            csv_path = os.path.join(output_folder, 'classification_results.csv')
         
-        predictions = model.predict(img_array)
-        score = float(keras.activations.sigmoid(predictions[0][0]))
-        good_score = score
-        bad_score = 1 - score
+        # Load existing CSV if provided and get already processed image paths
+        existing_processed_paths = set()
+        if existing_csv and os.path.exists(existing_csv):
+            existing_df = pd.read_csv(existing_csv)
+            existing_processed_paths = set(existing_df['im_paths'])
         
-        if good_score > bad_score:
-            im_classes[i] = 'good'
-            im_scores[i] = good_score
-        else:
-            im_classes[i] = 'bad'
-            im_scores[i] = bad_score
+        # Get the image paths that end in jpg, jpeg, png, or tif
+        file_types = ('*.jpg', '*.jpeg', '*.png', '*.tif')
+        im_paths = []
+        for file_extension in file_types:
+            if regex_pattern:
+                im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, regex_pattern + file_extension)))
+            else:
+                im_paths.extend(glob.glob(os.path.join(path_to_inference_imgs, file_extension)))
         
-        # Save intermediate results at the specified interval
-        if (i + 1) % save_interval == 0:
-            df = pd.DataFrame({'im_paths': im_paths[:i + 1],
-                               'im_classes': im_classes[:i + 1],
-                               'im_scores': im_scores[:i + 1]})
-            if existing_csv and os.path.exists(existing_csv):
-                existing_df = pd.read_csv(existing_csv)
-                df = pd.concat([existing_df, df]).drop_duplicates(subset='im_paths').reset_index(drop=True)
-            df.to_csv(csv_path, index=False)
-            print(f"Saved intermediate results to {csv_path} after processing {i + 1} images.")
-    
-    # Save final results to CSV
-    df = pd.DataFrame({'im_paths': im_paths,
-                       'im_classes': im_classes,
-                       'im_scores': im_scores})
-    
-    if existing_csv and os.path.exists(existing_csv):
-        existing_df = pd.read_csv(existing_csv)
-        df = pd.concat([existing_df, df]).drop_duplicates(subset='im_paths').reset_index(drop=True)
-    df.to_csv(csv_path, index=False)
-    print(f"Final results saved to {csv_path}.")
-    
-    # Sort the images based on classification
-    sort_images(csv_path, output_folder, move=move_files,move_additional_files=True)
-    
+        # Filter out already processed images
+        im_paths = [im_path for im_path in im_paths if im_path not in existing_processed_paths]
+        
+        im_classes = [None] * len(im_paths)
+        im_scores = [None] * len(im_paths)
+        
+        for i, im_path in enumerate(im_paths):
+            try:
+                img_array = read_file_for_classification_model(im_path, 128, 128, 3)
+            except Exception as e:
+                print(f"Error reading image: {im_path} with error: {e}")
+                continue
+            
+            predictions = model.predict(img_array)
+            score = float(keras.activations.sigmoid(predictions[0][0]))
+            good_score = score
+            bad_score = 1 - score
+            
+            if good_score > bad_score:
+                im_classes[i] = 'good'
+                im_scores[i] = good_score
+            else:
+                im_classes[i] = 'bad'
+                im_scores[i] = bad_score
+            
+            # Save intermediate results at the specified interval
+            if (i + 1) % save_interval == 0:
+                df = pd.DataFrame({'im_paths': im_paths[:i + 1],
+                                'im_classes': im_classes[:i + 1],
+                                'im_scores': im_scores[:i + 1]})
+                if existing_csv and os.path.exists(existing_csv):
+                    existing_df = pd.read_csv(existing_csv)
+                    df = pd.concat([existing_df, df]).drop_duplicates(subset='im_paths').reset_index(drop=True)
+                df.to_csv(csv_path, index=False)
+                print(f"Saved intermediate results to {csv_path} after processing {i + 1} images.")
+        
+        # Save final results to CSV
+        df = pd.DataFrame({'im_paths': im_paths,
+                        'im_classes': im_classes,
+                        'im_scores': im_scores})
+        
+        if existing_csv and os.path.exists(existing_csv):
+            existing_df = pd.read_csv(existing_csv)
+            df = pd.concat([existing_df, df]).drop_duplicates(subset='im_paths').reset_index(drop=True)
+        df.to_csv(csv_path, index=False)
+        print(f"Final results saved to {csv_path}.")
+        
+        # Sort the images based on classification
+        sort_images(csv_path, output_folder, move=move_files,move_additional_files=True)
+        
     return csv_path
 
 # def read_file_for_model(file_path:str)->np.ndarray:
