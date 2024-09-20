@@ -63,7 +63,9 @@ if not os.path.exists(shoreline_path):
 
 # 4. Enter the location of directory containing the downloaded imagery from Planet
 #   - Make sure this directory contains the tif,json,and xml files for the entire order
-planet_dir = r"C:\development\1_coastseg_planet\CoastSeg-Planet\downloads\DUCK_pier_cloud_0.7_TOAR_enabled_2023-06-01_to_2023-07-01\5576432c-cc59-49e6-882b-3b6ee3365c11\PSScene"
+# planet_dir = r"C:\development\1_coastseg_planet\CoastSeg-Planet\downloads\DUCK_pier_cloud_0.7_TOAR_enabled_2023-06-01_to_2023-07-01\5576432c-cc59-49e6-882b-3b6ee3365c11\PSScene"
+# if you are using your own data make sure you have it open to the PSScene directory that contains the tif files
+planet_dir = r"C:\development\1_coastseg_planet\CoastSeg-Planet\sample_data\sample_tiffs"
 good_dir = os.path.join(planet_dir, 'good') # this is where the good imagery will be stored
 
 # Settings

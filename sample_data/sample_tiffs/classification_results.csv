@@ -1,0 +1,4 @@
+im_paths,im_classes,im_scores
+C:\development\1_coastseg_planet\CoastSeg-Planet\sample_data\sample_tiffs\20230610_145046_77_2459_3B_TOAR_model_format.tif,good,0.9761746525764465
+C:\development\1_coastseg_planet\CoastSeg-Planet\sample_data\sample_tiffs\20230616_153032_93_2479_3B_TOAR_model_format.tif,good,0.9990832805633545
+C:\development\1_coastseg_planet\CoastSeg-Planet\sample_data\sample_tiffs\20230618_152713_72_248e_3B_TOAR_model_format.tif,good,0.9558104276657104
