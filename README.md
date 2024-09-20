@@ -5,34 +5,7 @@ The goal of this CoastSeg extension is to extract shorelines from Planet imagery
 
 Currently the team behind CoastSeg Planet is researching how to co-register Planet imagery to LandSat imagery as well as exploring tools that could be used.
 
-# Research
-
-## Data Requirements
-- `4-band multispectral Analytic Ortho Scene` from Planet
-   - According to [Planet's asset types](https://developers.planet.com/docs/data/psscene/#available-asset-types) this asset is "Radiometrically-calibrated analytic image stored as 16-bit scaled radiance."
-   - These radiance values need to be converted to TOA using a TOA conversion function
-
-
-## Co-Registration
-- CoastSeg downloads LandSat as TOA imagery from the tier 1 TOA collection which saves all the landsat values as 32 bit floats instead of unsigned 16 bit ints
-- CoastSeg-planet includes a script to convert 32bit float TOA imagery into unsigned 16 bit imagery that can be co-registered with the [arosics](https://git.gfz-potsdam.de/danschef/arosics) `COREG`` function
-
-
-## Planet Downloads VS CoastSeg Downloads
-### LandSat 8
-- Both Planet & CoastSeg can download L8 but download it from different collections
-- CoastSeg downloads imagery from the  tier 1 TOA collection
-   - All the landsat values are saved as 32 bit floats 
-   - These images CANNOT be co-registered using the [arosics](https://git.gfz-potsdam.de/danschef/arosics) `COREG`` function until they are converted to `unit16`
-- Planet downloads imagery from the tier 1  collection
-   - All the landsat values are saved as unsigned 16 bit ints
-   - Planet by default downloads each band separately so users will need to combine these bands together
-   - 
-
-
 # Installation
-
-
 
 ## 1. Install the Source Code
 
@@ -214,6 +187,31 @@ All of these outputs will be saved in the good directory of directory where all 
 ## Generic Workflow for Extracting Shorelines
 - Users will need to provide their own ROI and transects as geojson files in order to use CoastSeg Planet
 ![CoastSeg Planet-Planet Extract Shorelines](https://github.com/2320sharon/CoastSeg-Planet/assets/61564689/166d06d1-d976-4343-83fd-18c7e9fa327f)
+
+
+# Research
+
+## Data Requirements
+- `4-band multispectral Analytic Ortho Scene` from Planet
+   - According to [Planet's asset types](https://developers.planet.com/docs/data/psscene/#available-asset-types) this asset is "Radiometrically-calibrated analytic image stored as 16-bit scaled radiance."
+   - These radiance values need to be converted to TOA using a TOA conversion function
+
+
+## Co-Registration
+- CoastSeg downloads LandSat as TOA imagery from the tier 1 TOA collection which saves all the landsat values as 32 bit floats instead of unsigned 16 bit ints
+- CoastSeg-planet includes a script to convert 32bit float TOA imagery into unsigned 16 bit imagery that can be co-registered with the [arosics](https://git.gfz-potsdam.de/danschef/arosics) `COREG`` function
+
+
+## Planet Downloads VS CoastSeg Downloads
+### LandSat 8
+- Both Planet & CoastSeg can download L8 but download it from different collections
+- CoastSeg downloads imagery from the  tier 1 TOA collection
+   - All the landsat values are saved as 32 bit floats 
+   - These images CANNOT be co-registered using the [arosics](https://git.gfz-potsdam.de/danschef/arosics) `COREG`` function until they are converted to `unit16`
+- Planet downloads imagery from the tier 1  collection
+   - All the landsat values are saved as unsigned 16 bit ints
+   - Planet by default downloads each band separately so users will need to combine these bands together
+   - 
 
 
 ### Prototype Version 1 Diagram
