@@ -32,7 +32,21 @@ Currently the team behind CoastSeg Planet is researching how to co-register Plan
 
 # Installation
 
-CoastSeg Planet is under active development so the dependencies are subjuct to change
+
+
+## 1. Install the Source Code
+
+```
+git clone https://github.com/2320sharon/CoastSeg-Planet.git
+cd CoastSeg-Planet
+```
+
+## 2. Install the Dependencies
+CoastSeg Planet is under active development so the dependencies are subjuct to change.
+
+Run the code below to create a conda environment that will allow you to download planet imagery and extract shorelines.
+
+Make sure to run all the code below within the `CoastSeg-Planet` directory where the `pyproject.toml` file is located, otherwise the `pip install -e .` command will not work.
 
 ```
 conda create --name coastseg_planet python=3.10 -y
