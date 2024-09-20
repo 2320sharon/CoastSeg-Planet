@@ -3,6 +3,7 @@ import glob
 import os
 from datetime import datetime
 from typing import List
+from line_profiler import profile
 
 # Third-party library imports
 import geopandas as gpd
@@ -18,6 +19,10 @@ from scipy.spatial import KDTree
 from shapely.geometry import LineString, MultiLineString, MultiPoint
 from skimage import transform
 from tqdm import tqdm
+
+from rasterio.features import rasterize
+from rasterio.transform import from_origin
+from rasterio.warp import calculate_default_transform, reproject, Resampling
 
 # Local module imports
 from coastseg.extracted_shoreline import (
@@ -40,6 +45,94 @@ from coastseg_planet.processing import (
 from coastsat import SDS_tools
 
 
+def get_utm_zone_from_geotiff(file_path):
+    """
+    Get the UTM zone from a GeoTIFF file.
+
+    Parameters:
+    - file_path (str): Path to the GeoTIFF file.
+
+    Returns:
+    - utm_zone (str): UTM zone as EPSG code (e.g., 'EPSG:32633') or None if not a UTM CRS.
+    """
+    with rasterio.open(file_path) as dataset:
+        # Get the CRS of the dataset
+        crs = dataset.crs
+        # Check if the CRS is a projected CRS and is in UTM
+        if crs.is_projected :
+            # Extract the EPSG code
+            epsg_code = crs.to_epsg()
+            return f"EPSG:{epsg_code}"
+        else:
+            print("The CRS is not in UTM format.")
+            return None
+
+def dilate_shoreline(gdf, buffer_size, output_file, pixel_size=3, utm_zone=None):
+    """
+    Dilate a shoreline (or any linestring geometry) by a specified buffer size in meters,
+    and save the rasterized dilated geometry as a TIFF file.
+
+    Parameters:
+    - gdf (GeoDataFrame): Input GeoDataFrame containing linestring geometries.
+    - buffer_size (float): Buffer size in meters for dilation.
+    - output_file (str): Path to save the output TIFF file.
+    - pixel_size (float): Size of each pixel in meters for the output raster. Default is 3 meters.
+    - utm_zone (str, optional): UTM zone EPSG code (e.g., 'EPSG:32633'). If None, it will be determined based on the geometry.
+
+    Returns:
+    - None
+    """
+    # Function to determine UTM zone if not provided
+    def get_utm_crs(geometry):
+        lon = geometry.centroid.x
+        utm_zone = int(np.floor((lon + 180) / 6) + 1)
+        is_northern = geometry.centroid.y >= 0
+        utm_crs = f"EPSG:{32600 + utm_zone}" if is_northern else f"EPSG:{32700 + utm_zone}"
+        return utm_crs
+
+    # Determine the UTM CRS
+    if utm_zone is None:
+        utm_crs = get_utm_crs(gdf.geometry.unary_union)
+    else:
+        utm_crs = utm_zone
+
+    # Convert to UTM CRS
+    gdf_utm = gdf.to_crs(utm_crs)
+
+    # Apply the buffer directly in meters (unit of UTM CRS)
+    gdf_utm['geometry'] = gdf_utm.geometry.buffer(buffer_size)
+
+    # Get the bounds of the buffered geometry
+    minx, miny, maxx, maxy = gdf_utm.total_bounds
+
+    # Define the raster size based on the pixel size and geometry bounds
+    width = int((maxx - minx) / pixel_size)
+    height = int((maxy - miny) / pixel_size)
+    transform = from_origin(minx, maxy, pixel_size, pixel_size)
+
+    # Create an empty raster array
+    raster = np.zeros((height, width), dtype=np.uint8)
+
+    # Rasterize the buffered geometries
+    shapes = ((geom, 1) for geom in gdf_utm.geometry if geom.is_valid and not geom.is_empty)
+    rasterized = rasterize(shapes, out_shape=raster.shape, transform=transform, fill=0, default_value=1)
+
+    # Prepare metadata for saving
+    metadata = {
+        'height': rasterized.shape[0],
+        'width': rasterized.shape[1],
+        'count': 1,
+        'dtype': rasterized.dtype,
+        'crs': gdf_utm.crs,
+        'transform': transform
+    }
+
+    # Save the raster to a TIFF file
+    with rasterio.open(output_file, 'w', **metadata) as dst:
+        dst.write(rasterized, 1)
+
+    print(f"Saved dilated shoreline raster to {output_file}")
+    return output_file
 
 
 def stringify_datetime_columns(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -459,6 +552,105 @@ def extract_shorelines_with_reference_shoreline(directory:str,
     shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf,date_format='%Y-%m-%dT%H:%M:%S%z')
     return shorelines_dict
 
+
+def extract_shorelines_with_reference_shoreline_gdf(directory:str,
+                    suffix:str,
+                    reference_shoreline:gpd.geodataframe,
+                    extract_shorelines_settings:dict,
+                    model_name:str='segformer_RGB_4class_8190958',
+                    cloud_mask_suffix:str = '3B_udm2_clip.tif',
+                    separator = '_3B'):
+    """
+    Extracts shorelines from a directory of tiff files using a model and a reference shoreline.
+
+    Args:
+        directory (str): The directory containing the tiff files.
+        suffix (str): The suffix of the tiff files to extract shorelines from.
+
+        model_name (str): The name of the model to use for image segmentation. Defaults to 'segformer_RGB_4class_8190958'.
+        reference_shoreline (gpd.geodataframe): The reference shoreline as a geodataframe.
+        extract_shorelines_settings (dict): The settings for the shoreline extraction.
+        cloud_mask_suffix (str, optional): The suffix of the cloud mask files. Defaults to '3B_udm2_clip.tif'.
+        separator (str, optional): The separator used in the tiff file names. Defaults to '_3B'.
+
+    Returns:
+        dict: A dictionary containing the extracted shorelines.
+            Contains the keys 'dates' and 'shorelines'. 
+            'dates' is a list of date strings and 'shorelines' is a list of numpy arrays of coordinates. Each shoreline is associated with its corresponding date.
+    """
+                       
+    # if the directory contains no files with the suffix then return an empty dictionary
+    filtered_tiffs = glob.glob(os.path.join(directory, f"*{suffix}.tif"))
+    if len(filtered_tiffs) == 0:
+        print(f"No tiffs found in the directory: {directory}") 
+        return {}                 
+                       
+    all_extracted_shorelines = []
+    counter = 0
+
+    for target_path in tqdm(filtered_tiffs, desc="Extracting Shorelines"):
+        base_filename = processing.get_base_filename(target_path, separator)
+        # get the processed coregistered file, the cloud mask and the npz file
+        cloud_mask_path = utils.get_file_path(directory, base_filename, f"*{cloud_mask_suffix}")
+        if not cloud_mask_path:
+            print(f"Skipping {os.path.basename(target_path)} because cloud mask with {cloud_mask_suffix} not found")
+            continue
+        # get the date from the path
+        date=processing.get_date_from_path(base_filename)
+
+        # apply the model to the image
+        model.apply_model_to_image(target_path,directory)
+        # this is the file generated by the model
+        npz_path = os.path.join(directory, 'out', f"{base_filename}{suffix}_res.npz")
+        if not os.path.exists(npz_path):
+            print(f"Skipping {npz_path} because it does not exist")
+            continue
+            
+        save_path = os.path.join(directory, 'shoreline_detection_figures')
+
+        # load the model card containing the model information like label to class mapping
+        model_directory  = model.get_model_location(model_name)
+        model_card_path = utils.find_file_by_regex(
+            model_directory, r".*modelcard\.json$"
+        )
+                
+        # this shoreline is in the UTM projection
+        shoreline_gdf = get_shorelines_from_model_reference_shoreline_gdf(cloud_mask_path,
+                                                  target_path,
+                                                  model_card_path,
+                                                  npz_path,date,
+                                                  satname= 'planet',
+                                                settings = extract_shorelines_settings,
+                                                reference_shoreline_gdf = reference_shoreline,
+                                            save_path=save_path)
+        
+        all_extracted_shorelines.append(shoreline_gdf)
+        counter += 1
+
+        # Save the collected shorelines so far
+        if counter % 3 == 0 and len(all_extracted_shorelines) > 0:
+            shorelines_gdf = concat_and_sort_geodataframes(all_extracted_shorelines, "date")
+            extracted_shorelines_path = os.path.join(directory, f"raw_extracted_shorelines.geojson")
+            shorelines_gdf.to_file(extracted_shorelines_path, driver="GeoJSON")
+            print(f"Saved extracted shorelines to {extracted_shorelines_path}")
+
+    # put all the shorelines into a single geodataframe
+    if len(all_extracted_shorelines) == 0:
+        print(f"No shorelines extracted from {directory}. Double check the settings and the files in the directory.")
+        return {'shorelines':[],'dates':[]}
+
+    shorelines_gdf = concat_and_sort_geodataframes(all_extracted_shorelines, "date")
+
+    # save the geodataframe to a geojson file
+    extracted_shorelines_path = os.path.join(directory, f"raw_extracted_shorelines.geojson")  
+    stringified_shoreline_gdf = stringify_datetime_columns(shorelines_gdf.copy())
+    stringified_shoreline_gdf.to_file(extracted_shorelines_path, driver="GeoJSON")
+    print(f"saved extracted shorelines to {extracted_shorelines_path}")
+
+    # convert the geodataframe to a dictionary
+    shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf,date_format='%Y-%m-%dT%H:%M:%S%z')
+    return shorelines_dict
+
 def extract_shorelines(directory:str,
                     suffix:str,
                     model_card_path:str,
@@ -517,6 +709,101 @@ def extract_shorelines(directory:str,
     shorelines_dict = convert_shoreline_gdf_to_dict(shorelines_gdf,date_format='%Y-%m-%dT%H:%M:%S%z')
     return shorelines_dict
 
+
+def get_shorelines_from_model_reference_shoreline_gdf(planet_cloud_mask_path:str,
+                              planet_path:str,
+                              model_card_path,
+                              npz_file,
+                              date,
+                              satname,
+                              settings,
+                              reference_shoreline_gdf:gpd.GeoDataFrame,
+                              save_path=""):
+    """
+    Extracts shorelines from a model using the provided inputs.
+
+    Args:
+        planet_cloud_mask_path (str): The file path to the planet cloud mask.
+        planet_path (str): The file path to the planet image.
+        model_card_path: The file path to the model card.
+        npz_file: The file path to the npz file.
+        date: The date of the shoreline extraction.
+        satname: The name of the satellite.
+        settings: The settings for the shoreline extraction.
+        reference_shoreline_gdf (gpd.GeoDataFrame): The reference shoreline as a GeoDataFrame.
+        save_path (str, optional): The directory path to save the extracted shoreline. Defaults to the current working directory.
+
+    Returns:
+        geopandas.GeoDataFrame: The extracted shoreline as a GeoDataFrame.
+    """
+
+    if not save_path:
+        save_path = os.path.dirname(planet_path)
+    # get the labels for water and land
+    water_classes_indices,land_mask,class_mapping  = get_class_indices_from_model_card(npz_file,model_card_path) 
+    all_labels = load_image_labels(npz_file)
+    # remove any segments of land that are too small to be considered beach from the land mask
+    min_beach_area = settings.get("min_beach_area", 10000)
+    land_mask = remove_small_objects_and_binarize(land_mask, min_beach_area)
+
+    # ge the no data and cloud masks
+    im_nodata = rasterio.open(planet_cloud_mask_path).read(8)
+    cloud_mask = rasterio.open(planet_cloud_mask_path).read(6)
+    cloud_shadow_mask = rasterio.open(planet_cloud_mask_path).read(3)
+    # combine the cloud and shadow mask
+    cloud_and_shadow_mask = np.logical_or(cloud_mask, cloud_shadow_mask)
+
+    planet_RGB = read_planet_tiff(planet_path,[1,2,3])
+    image_epsg = get_epsg_from_tiff(planet_path)
+    if image_epsg is None:
+        raise ValueError(f"The image does not have a valid EPSG code. Image : {planet_path}")
+    image_epsg = int(image_epsg)
+    georef = get_georef(planet_path)
+
+    # for planet the pixel size is 3m and the land mask is the same size as the image
+    # this creates a reference shoreline buffer in pixel coordinates
+    utm_zone = get_utm_zone_from_geotiff(planet_path)
+    ref_sl_path = dilate_shoreline(reference_shoreline_gdf, buffer_size=100, output_file='dilated_shoreline.tiff', utm_zone=utm_zone)
+    reference_shoreline_buffer = processing.get_mask_in_matching_projection(planet_path,ref_sl_path)
+
+    # find the contours of the land mask & then filter out the shorelines that are too close to the cloud mask
+    contours = simplified_find_contours(
+        land_mask,
+        reference_shoreline_buffer=reference_shoreline_buffer
+        )
+    # this shoreline is in UTM coordinates
+    
+    filtered_shoreline_gdf = process_shoreline(
+            contours,
+            cloud_and_shadow_mask,
+            im_nodata,
+            georef,
+            image_epsg,
+            settings,
+            date,
+        )
+    # convert the shorelines to a list of numpy arrays that can be plotted
+    single_shoreline = []
+    for geom in filtered_shoreline_gdf.geometry:
+        single_shoreline.append(np.array(geom.coords))
+    shoreline = extract_contours(single_shoreline)
+
+    shoreline_detection_figures(
+        planet_RGB,
+        cloud_and_shadow_mask,
+        land_mask,
+        all_labels,
+        shoreline,
+        image_epsg,
+        georef,
+        date,
+        "planet",
+        class_mapping,
+        settings["output_epsg"],
+        save_path=save_path,
+        reference_shoreline_buffer=reference_shoreline_buffer,
+    )
+    return filtered_shoreline_gdf  
 
 def get_shorelines_from_model_reference_shoreline(planet_cloud_mask_path:str,
                               planet_path:str,
@@ -578,6 +865,7 @@ def get_shorelines_from_model_reference_shoreline(planet_cloud_mask_path:str,
         reference_shoreline_buffer=reference_shoreline_buffer
         )
     # this shoreline is in UTM coordinates
+    
     filtered_shoreline_gdf = process_shoreline(
             contours,
             cloud_and_shadow_mask,
@@ -609,6 +897,7 @@ def get_shorelines_from_model_reference_shoreline(planet_cloud_mask_path:str,
         reference_shoreline_buffer=reference_shoreline_buffer,
     )
     return filtered_shoreline_gdf               
+
 
 def get_shorelines_from_model(planet_cloud_mask_path:str,
                               planet_path:str,

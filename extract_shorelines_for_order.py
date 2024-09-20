@@ -63,6 +63,7 @@ if not os.path.exists(shoreline_path):
 
 # 4. Enter the location of directory containing the downloaded imagery from Planet
 #   - Make sure this directory contains the tif,json,and xml files for the entire order
+#   - If you are using your own data make sure you have it open to the PSScene directory that contains the tif files
 # planet_dir = r"C:\development\1_coastseg_planet\CoastSeg-Planet\downloads\DUCK_pier_cloud_0.7_TOAR_enabled_2023-06-01_to_2023-07-01\5576432c-cc59-49e6-882b-3b6ee3365c11\PSScene"
 # if you are using your own data make sure you have it open to the PSScene directory that contains the tif files
 planet_dir = r"C:\development\1_coastseg_planet\CoastSeg-Planet\sample_data\sample_tiffs"
@@ -107,8 +108,6 @@ shoreline_gdf = gpd.read_file(shoreline_path)
 out_epsg = shoreline_gdf.estimate_utm_crs().to_epsg()
 extract_shorelines_settings['output_epsg'] = out_epsg
 
-ref_sl = shoreline_extraction.get_reference_shoreline_as_array(shoreline_gdf,out_epsg)
-
 # suffix of the tif files to extract shorelines from
 separator = '_3B'
 suffix = f"{separator}_TOAR_model_format"
@@ -117,13 +116,15 @@ filtered_tiffs = glob.glob(os.path.join(good_dir, f"*{suffix}.tif"))
 if len(filtered_tiffs) == 0:
     print("No tiffs found in the directory")
 
+
 # then intersect these shorelines with the transects (comment this line out if you are loading from a file)
-shorelines_dict = shoreline_extraction.extract_shorelines_with_reference_shoreline(good_dir,
+shorelines_dict = shoreline_extraction.extract_shorelines_with_reference_shoreline_gdf(good_dir,
                                                           suffix,
-                                                          reference_shoreline=ref_sl,
+                                                          reference_shoreline=shoreline_gdf,
                                                         extract_shorelines_settings = extract_shorelines_settings,
                                                         model_name = MODEL_NAME,
                                                         )
+
 
 # save the shoreline dictionary to a json file
 shoreline_dictionary_path = os.path.join(good_dir,'shorelines_dict.json')

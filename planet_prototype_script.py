@@ -19,6 +19,8 @@ from coastseg import file_utilities
 
 warnings.filterwarnings('ignore', category=UserWarning, module='tensorflow')
 
+# os.environ['LINE_PROFILE'] = '1'
+
 # Inputs
 #--------------------------------------------------------------------------
 
