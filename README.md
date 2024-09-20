@@ -104,9 +104,13 @@ In the screenshot below you can see the orders created on the Planet dashboard. 
 # Extract Shorelines From a Planet Order 
 #### Script : `extract_shorelines_for_order.py`
 ## Phase 1 : Prepare the Data
+- Enter the full path to the directory containing all your planet images. This is the PSScene directory.
+![image](https://github.com/user-attachments/assets/d885d02d-ceed-4c2a-ac98-ce12951b8d20)
+
+
 ### 1. Move all the suborder to a single folder (only for large orders)
 - If you had a large order `CoastSeg Planet` automatically will split your order into sub orders and place them each in their own folder under your order.
-- Move all the files from the subfolders into one directory
+- Move all the files from the subfolders into one directory.
 
 | Small Order | Large Order |
 |-------------|-------------|
@@ -117,19 +121,35 @@ In the screenshot below you can see the orders created on the Planet dashboard. 
 
 ### 2. Get a Shoreline GeoJSON File
 
-Use coastseg to get a geojson containing only the reference shoreline. Use the Save Feature to File button in CoastSeg pictured below.
+1. Use coastseg to get a geojson containing only the reference shoreline. Use the Save Feature to File button in CoastSeg pictured below.
+
+2. Put the full path to the shoreline file you selected for `shoreline_path` or put the geojson file into `CoastSeg-Planet/sample_data` directory and enter the file name.
 
 ![image](https://github.com/user-attachments/assets/9bd2e252-fa9b-40de-95c2-c8b91abfe7fb)
+
+![image](https://github.com/user-attachments/assets/ff398573-d0af-4540-8129-e37e52f170fd)
+
 
 ### 3. Get a Transects GeoJSON File
 
-Use coastseg to get a geojson containing only the transects. Use the Save Feature to File button in CoastSeg pictured below.
+1. Use coastseg to get a geojson containing only the transects. Use the Save Feature to File button in CoastSeg pictured below.
 
 ![image](https://github.com/user-attachments/assets/9bd2e252-fa9b-40de-95c2-c8b91abfe7fb)
 
+2. Put the full path to the shoreline file you selected for `transects_path` or put the geojson file into `CoastSeg-Planet/sample_data` directory and enter the file name.
+
+
 ## Phase 2 : Extract Shorelines
 
+
 ### 1. Edit the Extract Shoreline Settings
+
+- Edit the extracted shoreline to change how shoreline are extracted the setting are explained below.
+
+
+![image](https://github.com/user-attachments/assets/729b56ae-8f3c-4fa2-8cdf-e3be1ac484d6)
+
+
 - `max_dist_ref` Enter the size in meters of the reference shoreline buffer. This is the region in which shorelines can be extracted shown in greenish yellow
 ![2023-06-16-15-30-32_planet](https://github.com/user-attachments/assets/adf39ffc-0a74-4e5f-838b-a5f9bce65286)
 
@@ -214,6 +234,4 @@ All of these outputs will be saved in the good directory of directory where all 
    - 
 
 
-### Prototype Version 1 Diagram
-![CoastSeg Planet-Current Prototyp drawio](https://github.com/2320sharon/CoastSeg-Planet/assets/61564689/cf6a4937-cd1c-49c9-ae37-269867aee030)
 
