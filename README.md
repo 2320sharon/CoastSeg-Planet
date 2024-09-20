@@ -129,6 +129,9 @@ Use coastseg to get a geojson containing only the transects. Use the Save Featur
 
 ## Phase 2 : Extract Shorelines
 
+![CoastSeg Planet-Extract Shorelines Ref SL](https://github.com/user-attachments/assets/c27386dd-5132-4fc0-8561-ea72421c7171)
+
+
 ### 1. Edit the Extract Shoreline Settings
 - `max_dist_ref` Enter the size in meters of the reference shoreline buffer. This is the region in which shorelines can be extracted shown in greenish yellow
 ![2023-06-16-15-30-32_planet](https://github.com/user-attachments/assets/adf39ffc-0a74-4e5f-838b-a5f9bce65286)
@@ -214,6 +217,4 @@ All of these outputs will be saved in the good directory of directory where all 
    - 
 
 
-### Prototype Version 1 Diagram
-![CoastSeg Planet-Current Prototyp drawio](https://github.com/2320sharon/CoastSeg-Planet/assets/61564689/cf6a4937-cd1c-49c9-ae37-269867aee030)
 
