@@ -1,5 +1,6 @@
 # Standard Library Imports
 import os
+import zipfile
 import glob
 import logging
 import warnings
@@ -34,7 +35,7 @@ extract_shorelines_settings = {
     'min_length_sl': 100,      # minimum length of the shoreline to be considered
     'dist_clouds': 50,         # distance to remove clouds from the shoreline
     'min_beach_area': 1000,    # minimum area of the beach to be considered
-    'max_dist_ref': 300,       # maximum distance to the reference shoreline in which shorelines will be extracted. Eg if 300, shorelines will be extracted within 300m of the reference shoreline
+    'max_dist_ref': 400,       # maximum distance to the reference shoreline in which shorelines will be extracted. Eg if 300, shorelines will be extracted within 300m of the reference shoreline
     'satname': 'planet',       # Name of the satellite used to capture the images
 }
 
@@ -66,7 +67,16 @@ if not os.path.exists(shoreline_path):
 #   - If you are using your own data make sure you have it open to the PSScene directory that contains the tif files
 # planet_dir = r"C:\development\1_coastseg_planet\CoastSeg-Planet\downloads\DUCK_pier_cloud_0.7_TOAR_enabled_2023-06-01_to_2023-07-01\5576432c-cc59-49e6-882b-3b6ee3365c11\PSScene"
 # if you are using your own data make sure you have it open to the PSScene directory that contains the tif files
-planet_dir = r"C:\development\1_coastseg_planet\CoastSeg-Planet\sample_data\sample_tiffs"
+
+# FOR NOW WE ARE GOING TO USE THE SAMPLE DATA INCLUDED IN A ZIP FILE
+# unzip the sample data 
+sample_zip =os.path.join(os.getcwd(),"sample_data", "sample_tiffs.zip")
+if os.path.exists(sample_zip):
+    with zipfile.ZipFile(sample_zip, 'r') as zip_ref:
+        zip_ref.extractall(os.path.join(os.getcwd(),"sample_data", ))
+
+# alternatively you can use the path below to unzip the sample data
+planet_dir = sample_zip =os.path.join(os.getcwd(),"sample_data", "sample_tiffs")
 good_dir = os.path.join(planet_dir, 'good') # this is where the good imagery will be stored
 
 # Settings

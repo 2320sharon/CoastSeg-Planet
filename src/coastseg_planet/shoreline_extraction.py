@@ -763,7 +763,8 @@ def get_shorelines_from_model_reference_shoreline_gdf(planet_cloud_mask_path:str
     # for planet the pixel size is 3m and the land mask is the same size as the image
     # this creates a reference shoreline buffer in pixel coordinates
     utm_zone = get_utm_zone_from_geotiff(planet_path)
-    ref_sl_path = dilate_shoreline(reference_shoreline_gdf, buffer_size=100, output_file='dilated_shoreline.tiff', utm_zone=utm_zone)
+    reference_shoreline_tif_path = os.path.join(os.path.dirname(planet_path),'reference_shoreline.tiff')
+    ref_sl_path = dilate_shoreline(reference_shoreline_gdf, buffer_size=100, output_file=reference_shoreline_tif_path, utm_zone=utm_zone)
     reference_shoreline_buffer = processing.get_mask_in_matching_projection(planet_path,ref_sl_path)
 
     # find the contours of the land mask & then filter out the shorelines that are too close to the cloud mask
