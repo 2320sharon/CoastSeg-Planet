@@ -1,30 +1,216 @@
+# Standard library imports
 import os
 import json
 import re
-from planet import collect
-from planet import Auth, Session, DataClient, OrdersClient, data_filter, order_request
-import planet
-from pprint import pprint
-import os
 import asyncio
+import shutil
 from datetime import datetime
-from shapely.geometry import MultiPolygon, shape
 import configparser
-import matplotlib.pyplot as plt
-from rasterio.transform import Affine
+from typing import Any, Dict, List, Optional, Tuple
+
+# Third-party imports
+import planet
 import matplotlib
-import numpy as np
 import geopandas as gpd
 from shapely import geometry
-from typing import Optional, Tuple
 from skimage.transform import resize
 import rasterio
-from typing import Optional
-from typing import List
-from datetime import datetime
-from typing import Dict, Any
-import shutil
+from rasterio.transform import Affine
 from tqdm.asyncio import tqdm_asyncio
+
+
+async def await_order(
+    client,
+    request,
+):
+    """
+    Creates an order using the provided client and request.
+    The order is created and the state is updated using exponential backoff.
+    (Note this does not download the order, it only creates it)
+
+    Args:
+        client (planet.Client): The Planet client used to create the order and download the data.
+        request (dict): The request object used to create the order.
+
+    Returns:
+        dict: The order details.
+    """
+    # First create the order and wait for it to be created
+    with planet.reporting.StateBar(state="creating") as reporter:
+        order = await client.create_order(request)
+        reporter.update(state="created", order_id=order["id"])
+        await wait_with_exponential_backoff(
+            client, order["id"], callback=reporter.update_state
+        )
+    return order
+
+
+def create_order_request(
+    order_name: str,
+    ids: list,
+    tools: list,
+    product_bundle="ortho_analytic_4b",
+    item_type="PSScene",
+) -> dict:
+    """
+    Creates an order request for Planet API.
+
+    Example request:
+    Request: {'name': 'Sample_order_name',
+        'products': [{'item_ids': ['20230605_145439_09_24b5', '20230606_145413_46_24b9', '20230606_145411_12_24b9'],
+      'item_type': 'PSScene', 'product_bundle': 'analytic_udm2'}]}
+
+    Args:
+        order_name (str): The name of the order.
+        ids (list): A list of item IDs to include in the order.
+        tools (list): A list of tools to apply to the order.
+            Use the get_tools function to create a list of tools
+            Available tools include
+                - planet.order_request.clip_tool
+                - planet.order_request.toar_tool
+                - planet.order_request.coregister_tool
+            Note: Not all Planet plans have access to all these tools.
+        product_bundle (str, optional): The product bundle to download. Defaults to "ortho_analytic_4b".
+        item_type (str, optional): The type of item to include in the order. Defaults to "PSScene".
+
+    Returns:
+        dict: A dictionary representing the order request for the Planet API.
+    """
+    if not tools:
+        tools = []
+
+    request = planet.order_request.build_request(
+        name=order_name,
+        products=[
+            planet.order_request.product(
+                item_ids=ids, product_bundle=product_bundle, item_type=item_type
+            )
+        ],
+        tools=tools,
+    )
+    return request
+
+
+def create_batches(ids, id_to_coregister: str = ""):
+    """
+    Splits a list of IDs into smaller batches, each containing up to 499 IDs.
+    Optionally, appends a the coregister i  to each batch to allow for coregistration.
+    Note: The limit for the planet api is 500 items per order, so we split the list into batches of 499 or less.
+
+    Args:
+        ids (list): A list of IDs to be split into batches.
+        id_to_coregister (str, optional): An ID to be appended to each batch.
+            Defaults to an empty string, meaning no ID will be appended.
+
+    Returns:
+        list: A list of batches, where each batch is a list of IDs. If
+        `id_to_coregister` is provided, it will be included in each batch.
+    """
+    # Split the ids list into batches of 499 or less
+    if id_to_coregister:
+        print(f"adding the id to coregister {id_to_coregister} to each batch of ids")
+        # add the id_to_coregister to each batch of ids
+        id_batches = [
+            ids[i : i + 499] + [id_to_coregister] for i in range(0, len(ids), 499)
+        ]
+    else:
+        id_batches = [ids[i : i + 499] for i in range(0, len(ids), 499)]
+    return id_batches
+
+
+def get_coregister_id(item_list, ids, coregister_id=""):
+    """
+    Determines the ID to use for coregistration based on the provided parameters.
+
+    If no coregister_id is provided, the ID with the lowest cloud cover will be selected automatically.
+
+    Parameters:
+    -----------
+    item_list : list
+        A list of items containing metadata, including cloud cover information recieved from the planet data api.
+    ids : list
+        A list of item_IDs derived from the item_list.
+    coregister_id : str, optional
+        The specific ID to use for coregistration. If not provided, the ID with the lowest cloud cover
+        will be selected automatically.
+
+    Returns:
+    --------
+    str
+        The ID to use for coregistration.
+
+    Raises:
+    -------
+    ValueError
+        If the provided `coregister_id` is not found in the list of IDs to download.
+    """
+    # Get the ID to coregister with
+    if not coregister_id:
+        id_to_coregister = get_image_id_with_lowest_cloud_cover(item_list)
+    else:
+        id_to_coregister = coregister_id
+        if id_to_coregister not in ids:
+            raise ValueError(
+                f"Coregister ID {id_to_coregister} not found in the list of IDs to download"
+            )
+    return id_to_coregister
+
+
+async def search_for_items(session, roi_dict, start_date, end_date, **kwargs):
+    """
+    Asynchronously searches for items using the Planet API based on the provided region of interest (ROI),
+    date range, and optional filters.
+    Args:
+        session (planet.Session): The Planet API session object.
+        roi_dict (GeoJSON-like dict): The region of interest for the search.
+             Example: {'type': 'FeatureCollection',
+              'features': [{'id': '0', 'type': 'Feature',
+                'properties': {},
+                'geometry': {'type': 'Polygon',
+                'coordinates': [[... ]]}}]}
+
+        start_date (str): The start date for the search in ISO 8601 format (e.g., "YYYY-MM-DD").
+        end_date (str): The end date for the search in ISO 8601 format (e.g., "YYYY-MM-DD").
+        **kwargs: Additional optional filters for the search, such as:
+            - cloud_cover (float): Maximum allowable cloud cover percentage (default is 0.99).
+    Returns:
+        list: A list of items matching the search criteria.
+    Raises:
+        ValueError: If no items matching the search criteria are found.
+    Notes:
+        - This function uses the Planet API's asynchronous client to perform the search.
+        - The ROI must be provided in a format that can be converted to a dictionary.
+        - The function raises an exception if no items are found, providing details about the search criteria.
+    """
+    data_client = session.client("data")
+    combined_filter = create_combined_filter(roi_dict, start_date, end_date, **kwargs)
+
+    # Create the order request
+    request = await data_client.create_search(
+        name="temp_search", search_filter=combined_filter, item_types=["PSScene"]
+    )
+
+    # run search returns an async iterator
+    items = data_client.run_search(search_id=request["id"], limit=10000)
+    item_list = [i async for i in items]
+
+    if item_list == []:
+        print(
+            f"No items found that matched the search criteria were found.\n\
+                start_date: {start_date}\n\
+                end_date: {end_date}\n\
+                cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
+        )
+
+        raise ValueError(
+            f"No items found that matched the search criteria were found.\n\
+                start_date: {start_date}\n\
+                end_date: {end_date}\n\
+                cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
+        )
+
+    return item_list
+
 
 async def download_multiple_orders_in_parallel(order_list):
     """
@@ -32,17 +218,18 @@ async def download_multiple_orders_in_parallel(order_list):
     with a progress bar showing the progress of all orders.
 
     Args:
-        order_list (list of dicts): A list of dictionaries, where each dictionary is formatted like the output of `make_order_dict`.
+        order_list (list of Orders): A list of dictionaries, where each dictionary is formatted like the output of `make_order_dict`.
 
     Returns:
         None
     """
-    
+
     tasks = []
-    
-    for order in order_list:
+
+    for order_item in order_list:
         # Load ROI GeoDataFrame from file path provided in the order dictionary
         roi = gpd.read_file(order["roi_path"])
+        order = order_item.to_dict()
 
         print(f"Order received with name {order['order_name']}. Downloading...")
 
@@ -54,26 +241,28 @@ async def download_multiple_orders_in_parallel(order_list):
             start_date=order["start_date"],
             end_date=order["end_date"],
             cloud_cover=order.get("cloud_cover", 0.7),  # Default to 0.7 if not provided
-            min_area_percentage=order.get("min_area_percentage", 0.7),  # Default to 0.7 if not provided
+            min_area_percentage=order.get(
+                "min_area_percentage", 0.7
+            ),  # Default to 0.7 if not provided
             coregister=order.get("coregister", False),
             coregister_id=order.get("coregister_id", ""),
             product_bundle="analytic_udm2",
-            continue_existing = order.get("continue_existing", False),
-            month_filter = order.get("month_filter", None)
+            continue_existing=order.get("continue_existing", False),
+            month_filter=order.get("month_filter", None),
         )
 
         tasks.append(task)
-    
+
     # Run all download tasks concurrently with progress tracking
     await tqdm_asyncio.gather(*tasks, total=len(tasks), desc="Downloading Orders")
 
 
-def filter_items_by_area(roi_gdf:gpd.GeoDataFrame,
-                         items:List[dict],
-                         min_area_percent:float=0.5)->List[dict]:
+def filter_items_by_area(
+    roi_gdf: gpd.GeoDataFrame, items: List[dict], min_area_percent: float = 0.5
+) -> List[dict]:
     """
     Filters a list of items based on their area within a region of interest (ROI). Any items whose area is lower than the minimum area percentage of the ROI will be removed.
-    
+
     Args:
         roi_gdf (gpd.GeoDataFrame): A GeoDataFrame representing the region of interest.
         items (List[dict]): A list of dictionaries representing the items.
@@ -82,13 +271,13 @@ def filter_items_by_area(roi_gdf:gpd.GeoDataFrame,
         List[dict]: A filtered list of items that meet the area criteria.
     """
     # get the ids of each of the items
-    ids  = [item["id"] for item in items]
+    ids = [item["id"] for item in items]
     # make a GeoDataFrame from the items
-    polygons = [geometry.Polygon(item["geometry"]['coordinates'][0]) for item in items]
-    items_gdf = gpd.GeoDataFrame(geometry=polygons,crs="EPSG:4326")
-    items_gdf["id"] = ids 
+    polygons = [geometry.Polygon(item["geometry"]["coordinates"][0]) for item in items]
+    items_gdf = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:4326")
+    items_gdf["id"] = ids
     # load the ROI and estimate the UTM CRS
-    utm_crs  = roi_gdf.estimate_utm_crs()
+    utm_crs = roi_gdf.estimate_utm_crs()
     # clip the polygons of the images to download to the ROI
     items_gdf = items_gdf.to_crs(utm_crs)
     roi_gdf = roi_gdf.to_crs(utm_crs)
@@ -97,45 +286,48 @@ def filter_items_by_area(roi_gdf:gpd.GeoDataFrame,
     # calculate the area of the clipped images & ROI
     clipped_gdf["area"] = clipped_gdf["geometry"].area
     roi_gdf["area"] = roi_gdf["geometry"].area
-    roi_area = roi_gdf["area"].sum()    
+    roi_area = roi_gdf["area"].sum()
 
     # drop any rows in clipped_gdf whose ROI is less than 50% of the total ROI
-    clipped_gdf = clipped_gdf[clipped_gdf["area"] > min_area_percent *roi_area]
+    clipped_gdf = clipped_gdf[clipped_gdf["area"] > min_area_percent * roi_area]
     print(f"Filtered out {len(items_gdf) - len(clipped_gdf)} items")
     # filter the items_list to only include the items that are in the clipped_gdf
     item_list = [item for item in items if item["id"] in clipped_gdf["id"].values]
     return item_list
 
 
-def move_contents(main_folder,psscene_path, remove_path=False):
+def move_contents(main_folder, psscene_path, remove_path=False):
     """Move all contents of the PSScene directory to the main folder."""
     # Move all contents of PSScene to the main folder
     for item in os.listdir(psscene_path):
         item_path = os.path.join(psscene_path, item)
         shutil.move(item_path, main_folder)
-    
+
     # Optionally, remove the PSScene directory if it is now empty
     if remove_path:
         os.rmdir(psscene_path)
 
+
 def move_psscene_contents(main_folder, remove_subdirs=False):
     """Use this function to move all the contents of the PSScene directory to the main folder.
-    This is because large planet orders are broken into smaller sub orders and stored in subdirectories."""
+    This is because large planet orders are broken into smaller sub orders and stored in subdirectories.
+    """
     # Traverse the main folder to find all subdirectories
     for subdir in os.listdir(main_folder):
         subdir_path = os.path.join(main_folder, subdir)
         if os.path.isdir(subdir_path):
-            if os.path.basename(subdir_path) == 'PSScene':
-                move_contents(main_folder,subdir_path, remove_subdirs)
+            if os.path.basename(subdir_path) == "PSScene":
+                move_contents(main_folder, subdir_path, remove_subdirs)
             # Check if PSScene directory exists within the subdirectory
-            psscene_path = os.path.join(subdir_path, 'PSScene')
+            psscene_path = os.path.join(subdir_path, "PSScene")
             if os.path.isdir(psscene_path):
-                move_contents(main_folder,psscene_path, remove_subdirs)
-                
+                move_contents(main_folder, psscene_path, remove_subdirs)
+
                 # Optionally, remove the subdirectory if requested
             if remove_subdirs:
                 if os.path.isdir(subdir_path):
                     shutil.rmtree(subdir_path)
+
 
 def download_topobathy(
     site: str,
@@ -167,7 +359,6 @@ def download_topobathy(
         raise ImportError(
             "bathyreq is not installed. Please install it by running 'pip install bathyreq'"
         )
-
 
     # Ensure save directory exists
     os.makedirs(save_dir, exist_ok=True)
@@ -269,7 +460,9 @@ def download_topobathy(
     return raster_path
 
 
-async def wait_with_exponential_backoff(client, order_id, state=None, initial_delay=5, max_attempts=200, callback=None):
+async def wait_with_exponential_backoff(
+    client, order_id, state=None, initial_delay=5, max_attempts=200, callback=None
+):
     """
     Wait until the order reaches the desired state using exponential backoff.
 
@@ -290,7 +483,7 @@ async def wait_with_exponential_backoff(client, order_id, state=None, initial_de
     while True:
         order_state = await client.get_order(order_id)
         current_state = order_state["state"]
-        
+
         if callback:
             callback(current_state)
 
@@ -304,7 +497,9 @@ async def wait_with_exponential_backoff(client, order_id, state=None, initial_de
 
         attempt += 1
         await asyncio.sleep(delay)
-        delay = min(delay * 2, 180)  # Cap the delay to a maximum of 180 seconds (3 minutes)
+        delay = min(
+            delay * 2, 180
+        )  # Cap the delay to a maximum of 180 seconds (3 minutes)
 
 
 class FixPointNormalize(matplotlib.colors.Normalize):
@@ -339,11 +534,11 @@ async def download_order_by_name(
     continue_existing: bool = False,
     order_states: list = None,
     product_bundle: str = "analytic_udm2",
-    clip:bool = True,
-    toar:bool = True,
-    coregister:bool = False,
-    coregister_id:str = "",
-    min_area_percentage:float = 0.5,
+    clip: bool = True,
+    toar: bool = True,
+    coregister: bool = False,
+    coregister_id: str = "",
+    min_area_percentage: float = 0.5,
     **kwargs,
 ):
     """
@@ -365,7 +560,7 @@ async def download_order_by_name(
         min_area_percentage (float, optional): The minimum area percentage of the ROI's area that must be covered by the images to be downloaded. Defaults to 0.5.
     kwargs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
-    
+
     Raises:
         ValueError: If start_date and end_date are not specified when creating a new order.
         ValueError: If roi is not specified when creating a new order.
@@ -380,15 +575,15 @@ async def download_order_by_name(
         order_states = [order_states]
 
     if overwrite and continue_existing:
-        raise ValueError("overwrite and continue_existing cannot both be True. As an order cannot be overwritten and continued at the same time. Please set one to False")
+        raise ValueError(
+            "overwrite and continue_existing cannot both be True. As an order cannot be overwritten and continued at the same time. Please set one to False"
+        )
 
     async with planet.Session() as sess:
         cl = sess.client("orders")
 
         # check if an existing order with the same name exists
-        order_ids = await get_order_ids_by_name(
-            cl, order_name, states=order_states
-        )
+        order_ids = await get_order_ids_by_name(cl, order_name, states=order_states)
         print(f"Matching Order ids: {order_ids}")
         if order_ids != [] and not overwrite:
             print(f"Order with name {order_name} already exists. Downloading...")
@@ -405,7 +600,9 @@ async def download_order_by_name(
             # if ROI is a geodataframe check if its empty or doesn't have a CRS
             if isinstance(roi, gpd.GeoDataFrame):
                 if roi.empty:
-                    raise ValueError("GeoDataFrame roi must not be empty to create a new order")
+                    raise ValueError(
+                        "GeoDataFrame roi must not be empty to create a new order"
+                    )
                 if not roi.crs:
                     raise ValueError("ROI must have a CRS to create a new order")
             if isinstance(roi, dict):
@@ -413,14 +610,28 @@ async def download_order_by_name(
                     raise ValueError("ROI must not be empty to create a new order")
                 roi = gpd.GeoDataFrame.from_features(roi)
                 # assume the ROI is in epsg 4326
-                roi.set_crs("EPSG:4326",inplace=True)
-                print(f"Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS")
+                roi.set_crs("EPSG:4326", inplace=True)
+                print(
+                    f"Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS"
+                )
 
             await make_order_and_download(
-                roi, start_date, end_date, order_name, output_path,product_bundle= product_bundle,clip=clip,toar=toar, coregister=coregister,coregister_id = coregister_id,min_area_percentage=min_area_percentage, **kwargs
+                roi,
+                start_date,
+                end_date,
+                order_name,
+                output_path,
+                product_bundle=product_bundle,
+                clip=clip,
+                toar=toar,
+                coregister=coregister,
+                coregister_id=coregister_id,
+                min_area_percentage=min_area_percentage,
+                **kwargs,
             )
 
-def filter_ids_by_date(items:List[dict],month_filter:List[str])->List[str]:
+
+def filter_ids_by_date(items: List[dict], month_filter: List[str]) -> List[str]:
     """
     Get a dictionary of Image IDs grouped based on the acquired date of the items.
     These ids are ordered by acquired date.
@@ -428,19 +639,21 @@ def filter_ids_by_date(items:List[dict],month_filter:List[str])->List[str]:
     args:
         items (list): A list of items.
         month_filter (list): A list of months to filter the acquired dates by.
-    
+
     returns:
         dict: A dictionary of Image IDs grouped by acquired date.
         ex. {"2023-06-27":[1234a,33445g],"2023-06-28":[2345c,4f465c]}
     """
     if not month_filter:
-        month_filter= [str(i).zfill(2) for i in range(1,13)]
+        month_filter = [str(i).zfill(2) for i in range(1, 13)]
 
     acquired_dates = [get_acquired_date(item) for item in items]
     unique_acquired_dates = set(acquired_dates)
 
     # filter the unique acquired dates based on the month filter
-    unique_acquired_dates = [date for date in unique_acquired_dates if date.split("-")[1] in month_filter]
+    unique_acquired_dates = [
+        date for date in unique_acquired_dates if date.split("-")[1] in month_filter
+    ]
 
     # print the first 2 unique acquired dates
     # print(f"Unique acquired dates: {list(unique_acquired_dates)[:2]}")
@@ -456,7 +669,7 @@ def filter_ids_by_date(items:List[dict],month_filter:List[str])->List[str]:
     return ids_by_date
 
 
-def get_ids(items,month_filter:list=None)->List[str]:
+def get_ids(items, month_filter: list = None) -> List[str]:
     """
     Get a 1D list of Image IDs grouped based on the acquired date of the items.
     These ids are ordered by acquired date.
@@ -479,12 +692,12 @@ def get_ids(items,month_filter:list=None)->List[str]:
 
     """
     if not month_filter:
-        month_filter= [str(i).zfill(2) for i in range(1,13)]
+        month_filter = [str(i).zfill(2) for i in range(1, 13)]
 
     if items == [] or items is None:
         return []
     # get a dict of each date in format 'YYYY-MM-DD' where each entry is the list of IDS that match this date
-    ids_by_date = filter_ids_by_date(items,month_filter)
+    ids_by_date = filter_ids_by_date(items, month_filter)
     # Get the IDs assoicated with each date from the dictionary. This is a nested list ex. [[1,2],[3,4]]
     ids = [ids_by_date.values()]
     # flattens the nested list into a single list ex. [[1,2],[3,4]] -> [1,2,3,4]
@@ -495,6 +708,7 @@ def get_ids(items,month_filter:list=None)->List[str]:
 
     return ids
 
+
 def get_image_id_with_lowest_cloud_cover(items):
     # Ensure the list is not empty
     print(f"items: {items}")
@@ -502,21 +716,31 @@ def get_image_id_with_lowest_cloud_cover(items):
         return None
 
     # Initialize the variables to store the minimum cloud cover and corresponding image ID
-    min_cloud_cover = float('inf')
+    min_cloud_cover = float("inf")
     image_id_with_lowest_cloud_cover = None
 
     # Iterate over the items to find the minimum cloud cover
     for item in items:
-        if 'properties' in item and 'cloud_cover' in item['properties'] and 'id' in item:
-            cloud_cover = item['properties']['cloud_cover']
+        if (
+            "properties" in item
+            and "cloud_cover" in item["properties"]
+            and "id" in item
+        ):
+            cloud_cover = item["properties"]["cloud_cover"]
             if cloud_cover < min_cloud_cover:
                 min_cloud_cover = cloud_cover
-                image_id_with_lowest_cloud_cover = item['id']
+                image_id_with_lowest_cloud_cover = item["id"]
     return image_id_with_lowest_cloud_cover
-        
 
 
-def create_combined_filter(roi: str, time1: str, time2: str, cloud_cover: float = 0.99,product_bundles="basic_analytic_4b",**kwargs) -> Dict[str, Any]:
+def create_combined_filter(
+    roi: str,
+    time1: str,
+    time2: str,
+    cloud_cover: float = 0.99,
+    product_bundles="basic_analytic_4b",
+    **kwargs,
+) -> Dict[str, Any]:
     """
     Create a combined filter for downloading planet imagery.
 
@@ -541,20 +765,27 @@ def create_combined_filter(roi: str, time1: str, time2: str, cloud_cover: float 
         product_bundles = [product_bundles]
     elif not isinstance(product_bundles, list):
         raise ValueError("product_bundles must be a string or a list of strings")
-    
-    analytic_filter = data_filter.asset_filter(product_bundles)
-    data_range_filter = data_filter.date_range_filter(
+
+    analytic_filter = planet.data_filter.asset_filter(product_bundles)
+    data_range_filter = planet.data_filter.date_range_filter(
         "acquired",
         datetime(month=month_min, day=day_min, year=year_min),
         datetime(month=month_max, day=day_max, year=year_max),
     )
 
-    print(f"Getting data from {time1} to {time2} with cloud cover less than {cloud_cover}")
+    print(
+        f"Getting data from {time1} to {time2} with cloud cover less than {cloud_cover}"
+    )
 
-    cloud_cover_filter = data_filter.range_filter("cloud_cover", lte=cloud_cover, )
-    geom_filter = data_filter.geometry_filter(roi)
+    cloud_cover_filter = planet.data_filter.range_filter(
+        "cloud_cover",
+        lte=cloud_cover,
+    )
+    geom_filter = planet.data_filter.geometry_filter(roi)
     # combining aoi and time and clear percent filter
-    combined_filter = data_filter.and_filter([geom_filter, data_range_filter,cloud_cover_filter,analytic_filter])
+    combined_filter = planet.data_filter.and_filter(
+        [geom_filter, data_range_filter, cloud_cover_filter, analytic_filter]
+    )
 
     return combined_filter
 
@@ -595,8 +826,12 @@ def get_ids_by_date(items):
     acquired_dates = [get_acquired_date(item) for item in items]
     unique_acquired_dates = set(acquired_dates)
     # creates a dictionary where the keys are acquired dates and the values are lists of item IDs
-    ids_by_date = dict((unique_date, get_date_item_ids(unique_date, items)) for unique_date in unique_acquired_dates)
+    ids_by_date = dict(
+        (unique_date, get_date_item_ids(unique_date, items))
+        for unique_date in unique_acquired_dates
+    )
     return ids_by_date
+
 
 async def create_and_download(client, request, download_path: str):
     """
@@ -614,62 +849,79 @@ async def create_and_download(client, request, download_path: str):
     with planet.reporting.StateBar(state="creating") as reporter:
         order = await client.create_order(request)
         reporter.update(state="created", order_id=order["id"])
-        await wait_with_exponential_backoff(client, order["id"], callback=reporter.update_state)
-    
+        await wait_with_exponential_backoff(
+            client, order["id"], callback=reporter.update_state
+        )
+
     # Download the order to the specified directory
     await client.download_order(order["id"], download_path, progress_bar=True)
     return order
 
 
-async def get_order_ids_by_name(client, order_name: str, states: Optional[List[str]] = None) -> List[Tuple[str, str]]:
+async def get_order_ids_by_name(
+    client,
+    order_name: str,
+    states: Optional[List[str]] = None,
+    contains_name: bool = False,
+) -> List[str]:
     """
     Retrieves the order IDs by their name or regex pattern and state(s).
 
+    Matching is performed in the following order:
+        1. Exact match with the order name.
+        2. Regex match: matches "order_name" or "order_name_batch...".
+        3. Substring match (optional): includes any order name containing the input name if `contains_name=True`.
+
     Args:
         client: The client object used to interact with the API.
-        order_name (str): The name or regex pattern of the order name to search for.
-        states (list, optional): The list of states of the order. Defaults to ['success'].
+        order_name (str): The name or pattern of the order to search for.
+        states (list, optional): The list of acceptable order states. Defaults to ['success'].
+        contains_name (bool): If True, also include orders where the name contains the given string.
 
     Returns:
-        List[Tuple[str, str]]: A list of tuples containing the ID and state of the matching orders.
+        List[str]: A list of matching order IDs.
     """
     if states is None:
         states = ["success"]
 
-    # returns a list of dictionaries containing the order details
-    orders_list = await collect(client.list_orders())
-    matching_orders = []
+    orders_list = await planet.collect(client.list_orders())
+    matching_orders = set()
 
-    if not orders_list :
+    if not orders_list:
         print("No orders found")
-        return matching_orders
-    
+        return list(matching_orders)
+
     print(f"Found {len(orders_list)} orders")
 
-    # First, try to find exact matches
     for order in orders_list:
         if "name" not in order or "state" not in order:
             continue
-        if order["name"] == order_name and order["state"] in states:
-            matching_orders.append(order["id"])
 
-    # Use regex matching
-    order_regex = f"^{order_name}(_batch.*)?$"
-    pattern = re.compile(order_regex)
+        order_name_val = order["name"]
+        order_state = order["state"]
 
-    for order in orders_list:
-        if "name" not in order or "state" not in order:
-            continue  
-        if pattern.match(order["name"]) and order["state"] in states:
-            matching_orders.append(order["id"])
+        # 1. Exact match
+        if order_name_val == order_name and order_state in states:
+            matching_orders.add(order["id"])
+            continue
 
-    # remove duplicate order ids
-    matching_orders = list(set(matching_orders))
+        # 2. Regex match (e.g., name_batchXYZ)
+        pattern = re.compile(f"^{order_name}(_batch.*)?$")
+        if pattern.match(order_name_val) and order_state in states:
+            matching_orders.add(order["id"])
+            continue
+
+        # 3. Substring match (optional)
+        if contains_name and order_name in order_name_val and order_state in states:
+            matching_orders.add(order["id"])
 
     if not matching_orders:
-        print(f"Order not found with name or pattern {order_name} and states {states}")
+        print(
+            f"Order not found with name or pattern '{order_name}' and any of states {states}"
+        )
 
-    return matching_orders
+    return list(matching_orders)
+
 
 def validate_order_downloaded(download_path: str) -> bool:
     """
@@ -737,17 +989,27 @@ def get_ids_by_dates(items):
 
 
 def get_tools(
-    roi_path: str = "",
+    roi: str = "",
     clip: bool = True,
     toar: bool = True,
-    coregister:bool =False,
+    coregister: bool = False,
     id_to_coregister: str = "",
 ):
     """
     Returns a list of tools based on the provided parameters.
 
     Args:
-        roi_path (str, optional): Path to the ROI file. Defaults to "".
+        roi(dict):
+            roi = {
+                "type": "Polygon",
+                "coordinates": [[
+                    [37.791595458984375, 14.84923123791421],
+                    [37.90214538574219, 14.84923123791421],
+                    [37.90214538574219, 14.945448293647944],
+                    [37.791595458984375, 14.945448293647944],
+                    [37.791595458984375, 14.84923123791421]
+                ]]
+            }
         clip (bool, optional): Flag indicating whether to perform clipping. Defaults to True.
         toar (bool, optional): Flag indicating whether to perform TOAR (Top of Atmosphere Reflectance) conversion. Defaults to True.
         coregister (bool, optional): Flag indicating whether to perform coregistration. Defaults to False.
@@ -757,8 +1019,8 @@ def get_tools(
         list: List of tools based on the provided parameters.
     """
     tools = []
-    if clip and roi_path:
-        tools.append(planet.order_request.clip_tool(aoi=roi_path))
+    if clip and roi:
+        tools.append(planet.order_request.clip_tool(aoi=roi))
     if toar:
         tools.append(planet.order_request.toar_tool(scale_factor=10000))
     if coregister and id_to_coregister:
@@ -766,16 +1028,16 @@ def get_tools(
     return tools
 
 
-async def get_item_list(roi, start_date, end_date,**kwargs):
+async def get_item_list(roi, start_date, end_date, **kwargs):
     """
     Get a list of item IDs based on the provided parameters.
 
     KwArgs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
-        month_filter (list): A list of months to filter the acquired dates by. 
+        month_filter (list): A list of months to filter the acquired dates by.
             Pass a list of months in the format ['01','02','03'] to filter the acquired dates by the months in the list.
             Defaults to an empty list which means all months are included.
-    
+
     """
     defaults = {
         "cloud_cover": 0.99,
@@ -785,10 +1047,10 @@ async def get_item_list(roi, start_date, end_date,**kwargs):
     async with planet.Session() as sess:
         cl = sess.client("data")
 
-        combined_filter = create_combined_filter(roi, start_date, end_date,**defaults)
+        combined_filter = create_combined_filter(roi, start_date, end_date, **defaults)
 
         # Create the order request
-        
+
         request = await cl.create_search(
             name="temp_search", search_filter=combined_filter, item_types=["PSScene"]
         )
@@ -796,19 +1058,21 @@ async def get_item_list(roi, start_date, end_date,**kwargs):
         # print(stats)
         # 100,000 is the highest limit for the search request that has been tested
         # create a search request that returns 100 items per page see this for an example https://github.com/planetlabs/notebooks/blob/master/jupyter-notebooks/Data-API/planet_python_client_introduction.ipynb
-        items = cl.run_search(search_id=request["id"],limit=10000)
+        items = cl.run_search(search_id=request["id"], limit=10000)
         item_list = [i async for i in items]
 
         if item_list == []:
-            print(f"No items found that matched the search criteria were found.\n\
+            print(
+                f"No items found that matched the search criteria were found.\n\
                   start_date: {start_date}\n\
                   end_date: {end_date}\n\
-                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
-        
+                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
+            )
+
         # print(f"items: {item_list}")
         # get the ids of the items group by acquired date, then flattened into a 1D list.
         if "month_filter" in kwargs:
-            ids = get_ids(item_list,kwargs["month_filter"])
+            ids = get_ids(item_list, kwargs["month_filter"])
         else:
             ids = get_ids(item_list)
         return ids
@@ -837,7 +1101,9 @@ async def order_by_ids(
             name=order_name,
             products=[
                 planet.order_request.product(
-                    item_ids=ids, product_bundle="ortho_analytic_4b", item_type="PSScene"
+                    item_ids=ids,
+                    product_bundle="ortho_analytic_4b",
+                    item_type="PSScene",
                 )
             ],
             tools=tools,
@@ -847,7 +1113,14 @@ async def order_by_ids(
         order = await create_and_download(cl, request, download_path)
 
 
-async def process_order_batch(cl, ids_batch, tools, order_name_base, download_path, product_bundle = "ortho_analytic_4b"):
+async def process_order_batch(
+    cl,
+    ids_batch,
+    tools,
+    order_name_base,
+    download_path,
+    product_bundle="ortho_analytic_4b",
+):
     order_name = f"{order_name_base}_{len(ids_batch)}"
     request = planet.order_request.build_request(
         name=order_name,
@@ -862,15 +1135,26 @@ async def process_order_batch(cl, ids_batch, tools, order_name_base, download_pa
     # Create and download the order
     await create_and_download(cl, request, download_path)
 
-async def process_orders_in_batches(cl, ids: List[str], tools, download_path, order_name_base,product_bundle = "ortho_analytic_4b",id_to_coregister:str = ""):
+
+async def process_orders_in_batches(
+    cl,
+    ids: List[str],
+    tools,
+    download_path,
+    order_name_base,
+    product_bundle="ortho_analytic_4b",
+    id_to_coregister: str = "",
+):
     # Split the ids list into batches of 499 or less
     if id_to_coregister:
         print(f"adding the id to coregister {id_to_coregister} to each batch of ids")
         # add the id_to_coregister to each batch of ids
-        id_batches = [ids[i:i + 499] + [id_to_coregister] for i in range(0, len(ids), 499)]
+        id_batches = [
+            ids[i : i + 499] + [id_to_coregister] for i in range(0, len(ids), 499)
+        ]
     else:
-        id_batches = [ids[i:i + 499] for i in range(0, len(ids), 499)]
-    
+        id_batches = [ids[i : i + 499] for i in range(0, len(ids), 499)]
+
     # # for each batch check if the id_to_coregister is in the batch
     # for i,ids_batch in enumerate(id_batches):
     #     if id_to_coregister:
@@ -880,21 +1164,31 @@ async def process_orders_in_batches(cl, ids: List[str], tools, download_path, or
     #             print(f"Coregister ID {id_to_coregister} found in the list of IDs to download")
     #     print(f"Batch {i + 1} of {len(id_batches)}: {len(ids_batch)} items")
 
-
     # Create tasks for each batch
     tasks = []
     for i, ids_batch in enumerate(id_batches):
-        print(f"processing batch #{i + 1} of size {len(ids_batch)} of {len(id_batches)}")
-        task = process_order_batch(cl, ids_batch, tools, f"{order_name_base}_batch_{i + 1}", download_path,product_bundle)
+        print(
+            f"processing batch #{i + 1} of size {len(ids_batch)} of {len(id_batches)}"
+        )
+        task = process_order_batch(
+            cl,
+            ids_batch,
+            tools,
+            f"{order_name_base}_batch_{i + 1}",
+            download_path,
+            product_bundle,
+        )
         tasks.append(task)
-    
+
     # Download orders in parallel, no more than 5 at a time
     semaphore = asyncio.Semaphore(5)
+
     async def limited_parallel_execution(task):
         async with semaphore:
             await task
-    
+
     await asyncio.gather(*(limited_parallel_execution(task) for task in tasks))
+
 
 async def make_order_and_download(
     roi,
@@ -906,8 +1200,8 @@ async def make_order_and_download(
     toar: bool = True,
     coregister: bool = False,
     coregister_id: str = "",
-    product_bundle:str = "ortho_analytic_4b",
-    min_area_percentage:float = 0.5,
+    product_bundle: str = "ortho_analytic_4b",
+    min_area_percentage: float = 0.5,
     **kwargs,
 ):
     """
@@ -921,61 +1215,64 @@ async def make_order_and_download(
         output_folder (str): The folder where the downloaded images will be saved.
         clip (bool, optional): Whether to clip the images to the ROI. Defaults to True.
         toar (bool, optional): Whether to convert the images to TOAR reflectance. Defaults to True.
-        coregister (bool, optional): Whether to coregister the images. Defaults to False.   
+        coregister (bool, optional): Whether to coregister the images. Defaults to False.
         coregister_id (str, optional): The ID of the image to coregister with. Defaults to "".
         product_bundle (str, optional): The product bundle to download. Defaults to "ortho_analytic_4b".
         min_area_percentage (float, optional): The minimum area percentage of the ROI's area that must be covered by the images to be downloaded. Defaults to 0.5.
 
     kwargs:
         cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
-        
+
     Returns:
         None
     """
 
     # Ensure cloud_cover is in kwargs with a default value of 0.99
-    kwargs.setdefault('cloud_cover', 0.99)
+    kwargs.setdefault("cloud_cover", 0.99)
 
     async with planet.Session() as sess:
         cl = sess.client("data")
         # convert the ROI to a dictionary so it can be used with the Planet API
-        roi_dict  = json.loads(roi.to_json())
-        combined_filter = create_combined_filter(roi_dict, start_date, end_date,**kwargs)
+        roi_dict = json.loads(roi.to_json())
+        combined_filter = create_combined_filter(
+            roi_dict, start_date, end_date, **kwargs
+        )
 
         # Create the order request
         request = await cl.create_search(
             name="temp_search", search_filter=combined_filter, item_types=["PSScene"]
         )
 
-        items = cl.run_search(search_id=request["id"],limit=10000)
+        items = cl.run_search(search_id=request["id"], limit=10000)
         item_list = [i async for i in items]
         if item_list == []:
-            print(f"No items found that matched the search criteria were found.\n\
+            print(
+                f"No items found that matched the search criteria were found.\n\
                   start_date: {start_date}\n\
                   end_date: {end_date}\n\
-                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
-             
-            raise ValueError(f"No items found that matched the search criteria were found.\n\
+                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
+            )
+
+            raise ValueError(
+                f"No items found that matched the search criteria were found.\n\
                   start_date: {start_date}\n\
                   end_date: {end_date}\n\
-                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}")
+                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
+            )
 
         # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
         print(f"Number of items to download before filtering by area: {len(item_list)}")
-        item_list = filter_items_by_area(roi, item_list,min_area_percentage)
+        item_list = filter_items_by_area(roi, item_list, min_area_percentage)
 
         print(f"Number of items to download after filtering by area: {len(item_list)}")
         # gets the IDs of the items to be downloaded based on the acquired date (not order by date though)
         if "month_filter" in kwargs:
             print(f"Applying Month filter: {kwargs['month_filter']}")
-            ids = get_ids(item_list,kwargs["month_filter"])
+            ids = get_ids(item_list, kwargs["month_filter"])
         else:
             ids = get_ids(item_list)
 
-        
         print(f"Requesting {len(ids)} items")
-
-
 
         # Get the ID to coregister with
         if not coregister_id:
@@ -985,7 +1282,9 @@ async def make_order_and_download(
         else:
             id_to_coregister = coregister_id
             if id_to_coregister not in ids:
-                raise ValueError(f"Coregister ID {id_to_coregister} not found in the list of IDs to download")
+                raise ValueError(
+                    f"Coregister ID {id_to_coregister} not found in the list of IDs to download"
+                )
         # create a client for the orders API
         cl = sess.client("orders")
 
@@ -995,10 +1294,19 @@ async def make_order_and_download(
         # print(f"id_to_coregister: {id_to_coregister} Apply Coregistration: {coregister}")
         # Process orders in batches
         print(f"Total number of scenes to download: {len(ids)}")
-        await process_orders_in_batches(cl, ids, tools, download_path, order_name,product_bundle=product_bundle,id_to_coregister=id_to_coregister)
+        await process_orders_in_batches(
+            cl,
+            ids,
+            tools,
+            download_path,
+            order_name,
+            product_bundle=product_bundle,
+            id_to_coregister=id_to_coregister,
+        )
+
 
 async def get_existing_order(
-    client, order_id:str, download_path="downloads", continue_existing=False
+    client, order_id: str, download_path="downloads", continue_existing=False
 ) -> Optional[dict]:
     """
     Downloads the contents of an order from the client.
@@ -1028,9 +1336,14 @@ async def get_existing_order(
     else:
         print("Order is not yet fulfilled.")
         return None
-    
+
+
 async def get_multiple_existing_orders(
-    client, order_ids, download_path="downloads", continue_existing=False, max_concurrent_downloads=5
+    client,
+    order_ids,
+    download_path="downloads",
+    continue_existing=False,
+    max_concurrent_downloads=5,
 ):
     """
     Downloads the contents of multiple orders from the client in parallel with a limit on concurrent downloads.
@@ -1048,10 +1361,13 @@ async def get_multiple_existing_orders(
 
     async def download_order_with_semaphore(order_id):
         async with semaphore:
-            return await get_existing_order(client, order_id, download_path, continue_existing)
+            return await get_existing_order(
+                client, order_id, download_path, continue_existing
+            )
 
     download_tasks = [download_order_with_semaphore(order_id) for order_id in order_ids]
     return await asyncio.gather(*download_tasks)
+
 
 # get the order ids
 async def cancel_order_by_name(
@@ -1071,11 +1387,11 @@ async def cancel_order_by_name(
     async with planet.Session() as sess:
         cl = sess.client("orders")
         # check if an existing order with the same name exists
-        order_ids = await get_order_ids_by_name(
-            cl, order_name, states=order_states
-        )
+        order_ids = await get_order_ids_by_name(cl, order_name, states=order_states)
         if order_ids == []:
-            print(f"No order found with name {order_name} was found with states {order_states}")
+            print(
+                f"No order found with name {order_name} was found with states {order_states}"
+            )
         print(f"order_ids requested to cancel: {order_ids}")
-        canceled_orders_info=await cl.cancel_orders(order_ids)
+        canceled_orders_info = await cl.cancel_orders(order_ids)
         print(f"canceled_orders_info: {canceled_orders_info}")
