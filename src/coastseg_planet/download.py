@@ -34,6 +34,7 @@ async def await_order(
 
     Returns:
         dict: The order details.
+            Not downloadable. Must call api with orders_client.get_order(order_id) to recieve downloadable version
     """
     # First create the order and wait for it to be created
     with planet.reporting.StateBar(state="creating") as reporter:

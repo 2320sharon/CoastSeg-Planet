@@ -167,6 +167,7 @@ class DownloadManager:
 
         Returns:
             dict: The order details.
+                Not downloadable. Must call api with orders_client.get_order(order_id) to recieve downloadable version
         """
         # First create the order and wait for it to be created
         with planet.reporting.StateBar(state="creating") as reporter:
@@ -211,6 +212,7 @@ class DownloadManager:
         for order in orders:
             print(f"Processing order: {order}")
             # get the order id thats running
+            # @todo can't use "order_contains_name" because using ROI_77 will return ROI_777 and ROI_77
             success_order_ids = await download.get_order_ids_by_name(
                 self.orders_client,
                 order.name,
@@ -320,7 +322,7 @@ class DownloadManager:
         Downloads the order and its items to the specified directory.
 
         Args:
-            order (str): JSON description of the order recieved from "orders_client.get_order(order_id)".
+            order (dict): JSON description of the order recieved from "orders_client.get_order(order_id)".
             directory (str): The directory to download the items to.
             roi_id (str): The region of interest (ROI) identifier.
             roi_geometry (dict): the geometry of the region of interest in GeoJSON format. Must contain "coordinates" as a top level key.
@@ -650,6 +652,7 @@ class DownloadManager:
 
         async with self.order_semaphore:
             # this creates an order and waits for it to be in state "success" (aka downloadable)
+            # Note: this is creating coroutines which is why we are not awaiting them
             order_tasks = [self.await_order(request) for request in requests]
 
             download_tasks = []
@@ -657,12 +660,17 @@ class DownloadManager:
                 # get the order object from the order that was created in await_order
                 planet_order = await order_coro
 
-                print(f"planet order: {planet_order}")
+                # planet order is a dictionary that shows the contents of the order, we need to get the order to download its contents now
+                order_id = planet_order.get("id", "")
+                # Now the order is in a downloadable state (aka '_links' in the existing order dictionary contains links to download the order contents)
+                existing_order = await self.orders_client.get_order(order_id)
+
+                print(f"planet order: {existing_order}")
                 # Immediately launch download
                 download_tasks.append(
                     asyncio.create_task(
                         self.download_order(
-                            planet_order, download_path, roi_id, roi_dict
+                            existing_order, download_path, roi_id, roi_dict
                         )
                     )
                 )
@@ -671,6 +679,7 @@ class DownloadManager:
             print(f"Waiting for all downloads to complete")
             await asyncio.gather(*download_tasks)
 
+    # @todo I think this function can be removed
     async def create_new_order(self, session, order: Order):
         """
         Creates a series of new orders based on the order request.
@@ -772,4 +781,5 @@ class DownloadManager:
                 )
 
             # Wait for all downloads to complete
+            print(f"gathering all the {len(download_tasks)} download tasks")
             await asyncio.gather(*download_tasks)
