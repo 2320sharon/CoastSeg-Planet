@@ -27,7 +27,7 @@ class DuckDBInterface:
 
     def create_geometry_index(self):
         """
-        Creates a spatial index on the geometry column of the tiles table.
+        Creates a spatial index on the geometry column of the rois table.
         """
         cursor = self.get_cursor()
 
@@ -36,17 +36,16 @@ class DuckDBInterface:
             """
             SELECT 1 
             FROM duckdb_indexes 
-            WHERE table_name = 'tiles' AND index_name = 'idx_tiles_geometry'
+            WHERE table_name = 'rois' AND index_name = 'idx_rois_geometry'
         """
         )
         if cursor.fetchone():
-            print("[INFO] Spatial index 'idx_tiles_geometry' already exists.")
+            print("[INFO] Spatial index 'idx_rois_geometry' already exists.")
             return
 
-        # Create the spatial index
-        cursor.execute("CREATE INDEX idx_tiles_geometry ON tiles(geometry);")
+        cursor.execute("CREATE INDEX idx_rois_geometry ON rois(geometry);")
         self.get_connection().commit()
-        print("[SUCCESS] Created spatial index 'idx_tiles_geometry' on tiles.geometry.")
+        print("[SUCCESS] Created spatial index 'idx_rois_geometry' on rois.geometry.")
 
     def get_table_names(self):
         cursor = self.get_cursor()
@@ -60,7 +59,7 @@ class DuckDBInterface:
         cursor.execute(
             """
             SELECT COUNT(*) FROM duckdb_tables 
-            WHERE table_name IN ('tiles', 'tile_files', 'orders')
+            WHERE table_name IN ('rois', 'roi_files', 'orders')
         """
         )
         if cursor.fetchone()[0] == 3:
@@ -71,7 +70,7 @@ class DuckDBInterface:
 
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS tiles (
+            CREATE TABLE IF NOT EXISTS rois (
                 roi_id TEXT PRIMARY KEY,
                 tile_id TEXT,
                 geometry GEOMETRY DEFAULT NULL,
@@ -82,14 +81,14 @@ class DuckDBInterface:
 
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS tile_files (
+            CREATE TABLE IF NOT EXISTS roi_files (
                 filepath TEXT PRIMARY KEY,
                 roi_id TEXT,
                 tile_id TEXT,
                 filename TEXT,
                 order_id TEXT,
                 status TEXT,
-                FOREIGN KEY (roi_id) REFERENCES tiles(roi_id)
+                FOREIGN KEY (roi_id) REFERENCES rois(roi_id)
             );
         """
         )
@@ -106,21 +105,21 @@ class DuckDBInterface:
         """
         )
 
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tile_id ON tile_files(tile_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tile_id ON roi_files(tile_id);")
         print("[SUCCESS] Tables created.")
 
     def get_roi_ids(self):
         """
-        Returns a set of all ROI_IDs in the tiles table.
+        Returns a set of all ROI_IDs in the rois table.
         """
         cursor = self.get_cursor()
-        cursor.execute("SELECT roi_id FROM tiles;")
+        cursor.execute("SELECT roi_id FROM rois;")
         return set(row[0] for row in cursor.fetchall())
 
     # get all the ROIs ID in between the start and end date
     def get_roi_ids_by_date(self, start_date, end_date):
         """
-        Returns a set of all ROI_IDs in the tiles table that fall within the specified date range.
+        Returns a set of all ROI_IDs in the rois table that fall within the specified date range.
 
         Args:
             start_date (str): The start date in 'YYYY-MM-DD' format.
@@ -132,7 +131,7 @@ class DuckDBInterface:
         cursor = self.get_cursor()
         cursor.execute(
             """
-            SELECT roi_id FROM tiles 
+            SELECT roi_id FROM rois 
             WHERE capture_time BETWEEN ? AND ?;
         """,
             (start_date, end_date),
@@ -141,13 +140,13 @@ class DuckDBInterface:
 
     def get_all_tile_ids(self):
         """
-        Returns a set of all ROI_IDs in the tiles table.
+        Returns a set of all ROI_IDs in the rois table.
         """
         cursor = self.get_cursor()
-        cursor.execute("SELECT tile_id FROM tiles;")
+        cursor.execute("SELECT tile_id FROM rois;")
         return set(row[0] for row in cursor.fetchall())
 
-    def insert_tile(self, roi_id, tile_id, capture_time, geom=None):
+    def insert_tile(self, tile_id, capture_time, geom=None):
         cursor = self.get_cursor()
         geom_param = json.dumps(geom) if geom else None
 
@@ -172,26 +171,72 @@ class DuckDBInterface:
                 raise ValueError(f"Invalid datetime format in string: {id_str}") from e
 
         capture_time = format_capture_time(capture_time)
-        cursor.execute("SELECT 1 FROM tiles WHERE roi_id = ?", (roi_id,))
+        cursor.execute("SELECT 1 FROM tiles WHERE tile_id = ?", (tile_id,))
         if cursor.fetchone():
-            print(f"[INFO] Tile with ROI_ID '{roi_id}' already exists.")
+            print(f"[INFO] Tile with tile_id '{tile_id}' already exists.")
             return
 
         query = (
             """
-            INSERT INTO tiles (roi_id, tile_id, geometry,capture_time)
+            INSERT INTO tiles ( tile_id, geometry,capture_time)
+            VALUES ( ?, ST_GeomFromGeoJSON(?), ?)
+        """
+            if geom_param
+            else """
+            INSERT INTO tiles (tile_id, geometry, capture_time)
+            VALUES (?, ?, ?)
+        """
+        )
+
+        cursor.execute(query, (tile_id, geom_param, capture_time))
+        self.get_connection().commit()
+        print(f"[SUCCESS] Inserted tile with tile_id '{tile_id}'.")
+
+    def insert_roi(self, roi_id, tile_id, capture_time, geom=None):
+        cursor = self.get_cursor()
+        geom_param = json.dumps(geom) if geom else None
+
+        def format_capture_time(id_str: str) -> str:
+            """
+            Converts a string in the format 'YYYYMMDD_HHMMSS_XX' to 'YYYY-MM-DD HH:MM:SS'.
+
+            Args:
+                id_str (str): The raw datetime ID string (e.g., '20241001_214231_42').
+
+            Returns:
+                str: A formatted timestamp string (e.g., '2024-10-01 21:42:31').
+
+            Raises:
+                ValueError: If the input does not match the expected format.
+            """
+            try:
+                date_part, time_part, *_ = id_str.split("_")
+                dt = datetime.strptime(date_part + time_part, "%Y%m%d%H%M%S")
+                return dt.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception as e:
+                raise ValueError(f"Invalid datetime format in string: {id_str}") from e
+
+        capture_time = format_capture_time(capture_time)
+        cursor.execute("SELECT 1 FROM rois WHERE roi_id = ?", (roi_id,))
+        if cursor.fetchone():
+            print(f"[INFO] ROI with ID '{roi_id}' already exists.")
+            return
+
+        query = (
+            """
+            INSERT INTO rois (roi_id, tile_id, geometry, capture_time)
             VALUES (?, ?, ST_GeomFromGeoJSON(?), ?)
         """
             if geom_param
             else """
-            INSERT INTO tiles (roi_id, tile_id, geometry, capture_time)
+            INSERT INTO rois (roi_id, tile_id, geometry, capture_time)
             VALUES (?, ?, ?, ?)
         """
         )
 
         cursor.execute(query, (roi_id, tile_id, geom_param, capture_time))
         self.get_connection().commit()
-        print(f"[SUCCESS] Inserted tile with ROI_ID '{roi_id}'.")
+        print(f"[SUCCESS] Inserted ROI with ID '{roi_id}'.")
 
     def insert_order(
         self, order_id, filename, status=None, filepath=None, geometry=None
@@ -236,13 +281,30 @@ class DuckDBInterface:
             print(f"[ERROR] Failed to insert/update order '{order_id}': {e}")
             raise e
 
-    def insert_tile_file(
+    def insert_tile_file(self, filepath, tile_id, filename, status, order_id=None):
+        cursor = self.get_cursor()
+        cursor.execute(
+            """
+            INSERT INTO tile_files (filepath, tile_id, filename, order_id, status)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(filepath) DO UPDATE SET
+                tile_id = EXCLUDED.tile_id,
+                filename = EXCLUDED.filename,
+                order_id = EXCLUDED.order_id,
+                status = EXCLUDED.status;
+        """,
+            (filepath, tile_id, filename, order_id, status),
+        )
+        self.get_connection().commit()
+        print(f"[SUCCESS] Inserted or updated tile file '{filepath}'.")
+
+    def insert_roi_file(
         self, filepath, roi_id, tile_id, filename, status, order_id=None
     ):
         cursor = self.get_cursor()
         cursor.execute(
             """
-            INSERT INTO tile_files (filepath, roi_id, tile_id, filename, order_id, status)
+            INSERT INTO roi_files (filepath, roi_id, tile_id, filename, order_id, status)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(filepath) DO UPDATE SET
                 roi_id = EXCLUDED.roi_id,
@@ -254,11 +316,11 @@ class DuckDBInterface:
             (filepath, roi_id, tile_id, filename, order_id, status),
         )
         self.get_connection().commit()
-        print(f"[SUCCESS] Inserted or updated tile file '{filepath}'.")
+        print(f"[SUCCESS] Inserted or updated roi file '{filepath}'.")
 
-    def get_filepaths_by_status(self, status, order_id=None):
+    def get_roi_filepaths_by_status(self, status, order_id=None):
         """
-        Returns rows from tile_files that have the given status or statuses,
+        Returns rows from roi_files that have the given status or statuses,
         optionally filtered by order_id.
 
         Parameters:
@@ -324,18 +386,45 @@ class DuckDBInterface:
 
         return [dict(zip(column_names, row)) for row in rows]
 
-    def delete_tile(self, roi_id):
+    def delete_tile(self, tile_id):
         """
-        Deletes a tile and all associated files by ROI_ID.
+        Deletes a tile from the tiles and tile_files tables by tile_ID.
         """
         cursor = self.get_cursor()
-        cursor.execute("DELETE FROM tile_files WHERE roi_id = ?", (roi_id,))
-        cursor.execute("DELETE FROM tiles WHERE roi_id = ?", (roi_id,))
+        cursor.execute("DELETE FROM tile_files WHERE roi_id = ?", (tile_id,))
+        cursor.execute("DELETE FROM tiles WHERE roi_id = ?", (tile_id,))
         self.get_connection().commit()
 
-    def delete_tiles(self, roi_ids):
+    def delete_roi(self, roi_id):
         """
-        Deletes multiple tiles and their associated files given a list or set of ROI_IDs.
+        Deletes an roi and all associated files by ROI_ID.
+        """
+        cursor = self.get_cursor()
+        cursor.execute("DELETE FROM roi_files WHERE roi_id = ?", (roi_id,))
+        cursor.execute("DELETE FROM rois WHERE roi_id = ?", (roi_id,))
+        self.get_connection().commit()
+
+    def delete_tiles(self, tile_ids):
+        """
+        Deletes multiple tiles and their associated files given a list or set of tile_ids.
+        """
+        if not tile_ids:
+            return
+
+        cursor = self.get_cursor()
+        placeholders = ",".join(["?"] * len(tile_ids))
+        cursor.execute(
+            f"DELETE FROM tile_files WHERE tile_id IN ({placeholders})", tuple(tile_ids)
+        )
+        cursor.execute(
+            f"DELETE FROM tiles WHERE tile_id IN ({placeholders})", tuple(tile_ids)
+        )
+        self.get_connection().commit()
+        print(f"[SUCCESS] Deleted {len(tile_ids)} tiles and associated files.")
+
+    def delete_rois(self, roi_ids):
+        """
+        Deletes multiple rois and their associated files given a list or set of roi_ids.
         """
         if not roi_ids:
             return
@@ -359,9 +448,17 @@ class DuckDBInterface:
         cursor.execute("DELETE FROM tile_files WHERE filepath = ?", (filepath,))
         self.get_connection().commit()
 
-    def get_tile_ids_by_roi(self, roi_geojson):
+    def delete_roi_file(self, filepath):
         """
-        Returns tile_ids whose geometries intersect with the given ROI.
+        Deletes metadata of a roi file.
+        """
+        cursor = self.get_cursor()
+        cursor.execute("DELETE FROM roi_files WHERE filepath = ?", (filepath,))
+        self.get_connection().commit()
+
+    def get_tile_ids_by_geom(self, roi_geojson):
+        """
+        Returns tile_ids whose geometries intersect with the given geometry.
         """
         self.use_spatial_extension()
         roi_json_str = json.dumps(roi_geojson)
@@ -411,7 +508,7 @@ class DuckDBInterface:
         cursor.execute(
             """
             SELECT roi_id
-            FROM tiles
+            FROM rois
             WHERE ST_Intersects(geometry, ST_GeomFromGeoJSON(?))
             """,
             (roi_json_str,),
@@ -419,21 +516,21 @@ class DuckDBInterface:
         results = cursor.fetchall()
         return [row[0] for row in results]
 
-    def update_tile_status_by_filepath(self, filepath, status):
+    def update_roi_status_by_filepath(self, filepath, status):
         cursor = self.get_cursor()
         cursor.execute(
             """
-            UPDATE tile_files SET status = ? WHERE filepath = ?
+            UPDATE roi_files SET status = ? WHERE filepath = ?
             """,
             (status, filepath),
         )
         self.get_connection().commit()
 
-    def update_tile_status_by_roi_id(self, roi_id, status):
+    def update_roi_status_by_roi_id(self, roi_id, status):
         cursor = self.get_cursor()
         cursor.execute(
             """
-            UPDATE tile_files SET status = ? WHERE roi_id = ?
+            UPDATE roi_files SET status = ? WHERE roi_id = ?
             """,
             (status, roi_id),
         )
@@ -444,25 +541,24 @@ class DuckDBInterface:
         cursor.execute(sql, params or ())
         return cursor.fetchall()
 
-    def get_tile_status_by_roi_id(self, roi_id):
+    def get_roi_status_by_roi_id(self, roi_id):
         cursor = self.get_cursor()
         cursor.execute(
             """
-            SELECT status FROM tile_files WHERE roi_id = ? LIMIT 1
+            SELECT status FROM roi_files WHERE roi_id = ? LIMIT 1
             """,
             (roi_id,),
         )
         result = cursor.fetchone()
         return result[0] if result else None
 
-    def get_tile_status_by_filepath(self, filepath):
+    def get_roi_status_by_filepath(self, filepath):
         cursor = self.get_cursor()
         cursor.execute(
             """
-            SELECT status FROM tile_files WHERE filepath = ?
+            SELECT status FROM roi_files WHERE filepath = ?
             """,
             (filepath,),
         )
         result = cursor.fetchone()
         return result[0] if result else None
-

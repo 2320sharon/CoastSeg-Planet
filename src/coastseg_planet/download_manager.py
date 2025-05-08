@@ -182,7 +182,7 @@ class DownloadManager:
         self, orders: List[Order], order_contains_name: bool = False
     ):
         """
-        Processes a list of orders for downloading.
+        Processes a list of orders for downloading. Note this implemention only works for order where the clip tool is used.
 
         For each order, this method:
             - Checks if a matching order already exists in the API based on name and state.
@@ -375,13 +375,13 @@ class DownloadManager:
         await self.insert_order_manifest(
             manifest_items, roi_id, order_id, roi_geometry, progress
         )
-        await self.insert_tile_ids(items_to_download, roi_id, roi_geometry)
+        await self.insert_roi_ids(items_to_download, roi_id, roi_geometry)
 
         for item in items_to_download:
             print(f'tile_id: {"_".join(item["filename"].split("_")[:4])}')
             await self.processor.process(
                 {
-                    "action": "update_metadata",
+                    "action": "update_metadata_roi",
                     "roi_id": roi_id,
                     "tile_id": "_".join(item["filename"].split("_")[:4]),
                     "order_id": order_id,
@@ -390,7 +390,7 @@ class DownloadManager:
                 }
             )
             await self.download_with_retry(
-                item, roi_id, order_id, "update_metadata", roi_geometry, progress
+                item, roi_id, order_id, "update_metadata_roi", roi_geometry, progress
             )
 
         progress.close()
@@ -434,6 +434,39 @@ class DownloadManager:
             )
 
     async def insert_tile_ids(
+        self, items: List[Dict[str, Any]], geometry: Dict[str, Any]
+    ) -> None:
+        """
+        Extracts unique tile IDs from filenames and queues them for insertion.
+
+        Example:
+            items = [
+                {"filename": "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"},
+                {"filename": "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"},
+            ]
+            geometry = {"type": "Polygon", "coordinates": [...]}
+
+        Args:
+            items (List[Dict[str, Any]]): List of dicts with a 'filename' key.
+            geometry (Dict[str, Any]): ROI geometry as GeoJSON. MUST contain "coordinates" as a top-level key.
+
+        Returns:
+            None
+        """
+        # get the tile id from the filename example: "20241004_223419_50_24b7" from "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"
+        unique_ids = set("_".join(item["filename"].split("_")[:4]) for item in items)
+        unique_ids.discard("manifest.json")
+        for tile_id in unique_ids:
+            await self.processor.process(
+                {
+                    "action": "insert_tile",
+                    "tile_id": tile_id,
+                    "capture_time": extract_unique_datetime_ids(tile_id),
+                    "geometry": geometry,
+                }
+            )
+
+    async def insert_roi_ids(
         self, items: List[Dict[str, Any]], roi_id: str, roi_geometry: Dict[str, Any]
     ) -> None:
         """
@@ -461,7 +494,7 @@ class DownloadManager:
         for tile_id in unique_ids:
             await self.processor.process(
                 {
-                    "action": "insert_tile",
+                    "action": "insert_roi",
                     "roi_id": roi_id,
                     "tile_id": tile_id,
                     "capture_time": extract_unique_datetime_ids(tile_id),

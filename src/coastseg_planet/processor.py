@@ -30,33 +30,53 @@ class TileProcessor:
         """
         try:
             action = db_entry.get("action", "update_metadata")
-            if action == "update_metadata":
+            if action == "update_metadata_roi":
                 logging.info(
-                    f"[Processor] Saving {db_entry['roi_id']} with status: {db_entry.get('status', '')}"
+                    "[Processor] Saving ROI %s with status: %s",
+                    db_entry["roi_id"],
+                    db_entry.get("status", ""),
+                )
+                await self.insert_roi_file(db_entry)
+            elif action == "update_metadata_tile":
+                logging.info(
+                    "[Processor] Saving tile %s with status: %s",
+                    db_entry["tile_id"],
+                    db_entry.get("status", ""),
                 )
                 await self.insert_tile_file(db_entry)
             elif action == "insert_tile":
                 logging.info(
-                    f"[Processor] Inserting tile {db_entry['roi_id']} into Tiles Table with geometry {db_entry.get('geometry', '')}"
+                    "[Processor] Inserting tile %s into Tiles Table with geometry %s",
+                    db_entry["roi_id"],
+                    db_entry.get("geometry", ""),
                 )
                 await self.insert_tile(db_entry)
+            elif action == "insert_roi":
+                logging.info(
+                    "[Processor] Inserting roi %s into Rois Table with geometry %s",
+                    db_entry["roi_id"],
+                    db_entry.get("geometry", ""),
+                )
+                await self.insert_roi(db_entry)
             elif action == "update_order":
                 logging.info(
-                    f"[Processor] Inserting order {db_entry['order_id']} into orders Table with geometry {db_entry.get('geometry', '')}"
+                    "[Processor] Inserting order %s into orders Table with geometry %s",
+                    db_entry["order_id"],
+                    db_entry.get("geometry", ""),
                 )
                 await self.insert_order(db_entry)
             else:
-                logging.error(f"[Processor] Unknown action: {action}")
+                logging.error("[Processor] Unknown action: %s", action)
         except Exception as e:
-            logging.error(f"[Processor] Error during process: {e}", exc_info=True)
+            logging.error("[Processor] Error during process: %s", e, exc_info=True)
             raise e
 
-    async def insert_tile(self, entry: Dict) -> None:
+    async def insert_roi(self, entry: Dict) -> None:
         """
-        Inserts or updates a tile entry in the database.
+        Inserts or updates a ROI entry in the database.
 
         Args:
-            entry (Dict): Dictionary containing tile data including roi_id, tile_id, geometry, and capture_time.
+            entry (Dict): Dictionary containing roi data including roi_id, tile_id, geometry, and capture_time.
         """
         roi_id = entry["roi_id"]
         tile_id = entry["tile_id"]
@@ -67,8 +87,30 @@ class TileProcessor:
             logging.warning(f"[Processor] Geometry is None for {roi_id}")
             return
 
-        self.db.insert_tile(
+        self.db.insert_roi(
             roi_id=roi_id,
+            tile_id=tile_id,
+            capture_time=capture_time,
+            geom=geometry,
+        )
+        logging.info(f"[Processor] Inserted {roi_id} into Tiles Table")
+
+    async def insert_tile(self, entry: Dict) -> None:
+        """
+        Inserts or updates a tile entry in the database.
+
+        Args:
+            entry (Dict): Dictionary containing tile data including roi_id, tile_id, geometry, and capture_time.
+        """
+        tile_id = entry["tile_id"]
+        geometry = entry["geometry"]
+        capture_time = entry["capture_time"]
+
+        if geometry is None:
+            logging.warning(f"[Processor] Geometry is None for {roi_id}")
+            return
+
+        self.db.insert_tile(
             tile_id=tile_id,
             capture_time=capture_time,
             geom=geometry,
@@ -99,12 +141,12 @@ class TileProcessor:
         )
         logging.info(f"[Processor] Inserted {order_id} into orders Table")
 
-    async def insert_tile_file(self, entry: Dict) -> None:
+    async def insert_roi_file(self, entry: Dict) -> None:
         """
-        Inserts or updates a tile file entry in the database.
+        Inserts or updates a roi file entry in the database.
 
         Args:
-            entry (Dict): Dictionary containing tile file data including roi_id, tile_id, filepath, status, and order_id.
+            entry (Dict): Dictionary containing roi file data including roi_id, tile_id, filepath, status, and order_id.
         """
         roi_id = entry["roi_id"]
         tile_id = entry["tile_id"]
@@ -115,7 +157,7 @@ class TileProcessor:
         status = entry["status"]
         order_id = entry["order_id"]
 
-        self.db.insert_tile_file(
+        self.db.insert_roi_file(
             filepath=filepath,
             roi_id=roi_id,
             tile_id=tile_id,
@@ -125,15 +167,29 @@ class TileProcessor:
         )
         logging.info(f"[Processor] Inserted {roi_id} into tile_files Table")
 
-    async def insert_to_db(self, entry: Dict) -> None:
+    async def insert_tile_file(self, entry: Dict) -> None:
         """
-        Simulates an insert into the database. Placeholder for actual DB operations.
+        Inserts or updates a tile file entry in the database.
 
         Args:
-            entry (Dict): Dictionary representing a database entry.
+            entry (Dict): Dictionary containing tile file data including roi_id, tile_id, filepath, status, and order_id.
         """
-        await asyncio.sleep(0.1)
-        logging.info(f"[Processor] Inserted {entry['roi_id']} into DB")
+        tile_id = entry["tile_id"]
+        filepath = entry["filepath"]
+        # convert filepath to string so that it can be inserted into the database
+        filepath = str(filepath)
+        filename = os.path.basename(filepath)
+        status = entry["status"]
+        order_id = entry["order_id"]
+
+        self.db.insert_tile_file(
+            filepath=filepath,
+            tile_id=tile_id,
+            filename=filename,
+            order_id=order_id,
+            status=status,
+        )
+        logging.info(f"[Processor] Inserted {tile_id} into tile_files Table")
 
     def get_failed_or_pending_items(
         self, items_to_download: List[Dict], order_id: Optional[str] = None
@@ -148,12 +204,13 @@ class TileProcessor:
         Returns:
             List[Dict]: List of file entries with specified statuses.
         """
+        # @todo finish this function to use items_to_download or remove parameter
         status = [
             TILE_STATUSES["DOWNLOADING"],
             TILE_STATUSES["FAILED"],
             TILE_STATUSES["PENDING"],
         ]
-        return self.db.get_filepaths_by_status(status=status, order_id=order_id)
+        return self.db.get_roi_filepaths_by_status(status=status, order_id=order_id)
 
     def get_success_file_items(
         self, items_to_download: List[Dict], order_id: Optional[str] = None
@@ -168,5 +225,6 @@ class TileProcessor:
         Returns:
             List[Dict]: List of file entries with download success status.
         """
+        # @todo finish this function to use items_to_download or remove parameter
         status = [TILE_STATUSES["DOWNLOADED"]]
-        return self.db.get_filepaths_by_status(status=status, order_id=order_id)
+        return self.db.get_roi_filepaths_by_status(status=status, order_id=order_id)
