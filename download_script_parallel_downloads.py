@@ -8,7 +8,7 @@ from coastseg_planet.orders import Order
 
 # 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
 CLOUD_COVER = 0.70
-month_filter=['05','06','07','08','09','10']
+month_filter = ["05", "06", "07", "08", "09", "10"]
 
 
 # 1. Select a start and end date YYYY-MM-DD for each of the orders
@@ -20,11 +20,13 @@ month_filter=['05','06','07','08','09','10']
 
 start_date = "2024-07-15"
 end_date = "2024-07-31"
-roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\3_DUCK\roi.geojson"
-order_name= f"DUCK_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}"
+roi_path = (
+    r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\3_DUCK\roi.geojson"
+)
+order_name = f"DUCK_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}"
 # Create multiple orders
 order = Order(
-    order_name= order_name,
+    order_name=order_name,
     roi_path=roi_path,
     start_date=start_date,
     end_date=end_date,
@@ -33,16 +35,18 @@ order = Order(
     continue_existing=False,
     min_area_percentage=0.25,
     month_filter=month_filter,
-
+    tools={"clip", "toar"},  # Use clip and toar tools by default
 ).get_order()
 
 # Change the order name and roi path for each order
 start_date = "2024-07-14"
 end_date = "2024-07-31"
-roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\1_SANTA_CRUZ\roi.geojson"
-order_name= f"santa_cruz_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}"
+roi_path = (
+    r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\1_SANTA_CRUZ\roi.geojson"
+)
+order_name = f"santa_cruz_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}"
 order2 = Order(
-    order_name= order_name,
+    order_name=order_name,
     roi_path=roi_path,
     start_date=start_date,
     end_date=end_date,
@@ -51,7 +55,7 @@ order2 = Order(
     continue_existing=False,
     min_area_percentage=0.25,
     month_filter=month_filter,
-
+    tools={"clip", "toar"},  # Use clip and toar tools by default
 ).get_order()
 
 # I would not recommend more than 5 orders at a time. Planet API has a limit of 5 simultaneous downloads
@@ -59,19 +63,20 @@ order2 = Order(
 order_list = [order, order2]
 
 
-
 # 4. read the api key from the config file and set it in the environment
 # Enter the API key into config.ini with the following format
 # [DEFAULT]
 # API_KEY = <PLANET API KEY>
 
-config_filepath = os.path.join(os.getcwd(),"config.ini")
+config_filepath = os.path.join(os.getcwd(), "config.ini")
 if os.path.exists(config_filepath) is False:
     raise FileNotFoundError(f"Config file not found at {config_filepath}")
 config = download.read_config(config_filepath)
 # set the API key in the environment and store it
-if config.get("DEFAULT","API_KEY") == "":
-    raise ValueError("API_KEY not found in config file. Please enter your API key in the config file and try again")
+if config.get("DEFAULT", "API_KEY") == "":
+    raise ValueError(
+        "API_KEY not found in config file. Please enter your API key in the config file and try again"
+    )
 os.environ["API_KEY"] = config["DEFAULT"]["API_KEY"]
 auth = Auth.from_env("API_KEY")
 auth.store()

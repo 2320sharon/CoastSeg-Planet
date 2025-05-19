@@ -16,14 +16,15 @@ CLOUD_COVER = 0.70
 # roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\boardwalk\roi.geojson"
 
 
-
 start_date = "2024-07-15"
 end_date = "2024-07-31"
-roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\3_DUCK\roi.geojson"
-order_name= f"DUCK_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}_coregistered_with_20240728_150711_16_24bf"
+roi_path = (
+    r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\3_DUCK\roi.geojson"
+)
+order_name = f"DUCK_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}_coregistered_with_20240728_150711_16_24bf"
 # Create multiple orders
 order = Order(
-    order_name= order_name,
+    order_name=order_name,
     roi_path=roi_path,
     start_date=start_date,
     end_date=end_date,
@@ -31,18 +32,23 @@ order = Order(
     destination=os.path.join(os.getcwd(), "downloads", order_name),
     continue_existing=False,
     coregister_id="20240728_150711_16_24bf",
-    coregister=True,
     min_area_percentage=0.7,
-
+    tools={
+        "clip",
+        "toar",
+        "coregister",
+    },  # Use clip, toar, and coregister tools by default
 ).get_order()
 
 # Change the order name and roi path for each order
 start_date = "2024-07-14"
 end_date = "2024-07-31"
-roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\1_SANTA_CRUZ\roi.geojson"
-order_name= f"santa_cruz_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}_coregistered_with_20240723_181417_27_24c8"
+roi_path = (
+    r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\1_SANTA_CRUZ\roi.geojson"
+)
+order_name = f"santa_cruz_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}_coregistered_with_20240723_181417_27_24c8"
 order2 = Order(
-    order_name= order_name,
+    order_name=order_name,
     roi_path=roi_path,
     start_date=start_date,
     end_date=end_date,
@@ -50,14 +56,16 @@ order2 = Order(
     destination=os.path.join(os.getcwd(), "downloads", order_name),
     continue_existing=False,
     coregister_id="20240723_181417_27_24c8",
-    coregister=True,
     min_area_percentage=0.7,
-
+    tools={
+        "clip",
+        "toar",
+        "coregister",
+    },  # Use clip, toar, and coregister tools by default
 ).get_order()
 
 # make the list of orders
 order_list = [order, order2]
-
 
 
 # 4. read the api key from the config file and set it in the environment
@@ -65,13 +73,15 @@ order_list = [order, order2]
 # [DEFAULT]
 # API_KEY = <PLANET API KEY>
 
-config_filepath = os.path.join(os.getcwd(),"config.ini")
+config_filepath = os.path.join(os.getcwd(), "config.ini")
 if os.path.exists(config_filepath) is False:
     raise FileNotFoundError(f"Config file not found at {config_filepath}")
 config = download.read_config(config_filepath)
 # set the API key in the environment and store it
-if config.get("DEFAULT","API_KEY") == "":
-    raise ValueError("API_KEY not found in config file. Please enter your API key in the config file and try again")
+if config.get("DEFAULT", "API_KEY") == "":
+    raise ValueError(
+        "API_KEY not found in config file. Please enter your API key in the config file and try again"
+    )
 os.environ["API_KEY"] = config["DEFAULT"]["API_KEY"]
 auth = Auth.from_env("API_KEY")
 auth.store()
