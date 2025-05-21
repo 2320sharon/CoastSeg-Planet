@@ -44,12 +44,12 @@ async def insert_order(folder_path: str, processor):
 def search_files(directory, pattern, search_strings):
     """
     Recursively search through a directory for files matching a regex pattern.
-    For each matching file, check if any of the provided strings are present in the file content.
+    For each matching file, check if any of the provided strings are present in the file name.
 
     Args:
         directory (str): The root directory to start the search.
-        pattern (str): The regex pattern to match file names (e.g. r'.*\.(tiff?|xml)$').
-        search_strings (Union[str, List[str]]): String or list of strings to search for in file content.
+        pattern (str): The regex pattern to match file names (e.g. r'.*\\.(tiff?|xml)$').
+        search_strings (Union[str, List[str]]): String or list of strings to search for in file names.
 
     Returns:
         bool: True if any matching file contains any of the search strings, otherwise False.
@@ -62,14 +62,11 @@ def search_files(directory, pattern, search_strings):
     for root, _, files in os.walk(directory):
         for file in files:
             if regex.match(file):
-                file_path = os.path.join(root, file)
-                try:
-                    with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read()
-                        if any(s in content for s in search_strings):
-                            return True
-                except Exception as e:
-                    print(f"Error reading {file_path}: {e}")
+                # check if the the file name contains any of the search strings
+                if any(s in file for s in search_strings):
+                    print(f"Found matching file: {file}")
+                    return True
+
     return False
 
 
@@ -348,7 +345,7 @@ def extract_unique_datetime_ids(items: Union[str, List[str]]) -> Union[str, Set[
 #     print("✅ Inserted all tiles and files in tile mode.")
 
 
-async def process_tile_mode(processor, id_dict, extractors):
+async def process_tile_mode(processor, id_dict, extractors, order_name=None):
     # Insert each tile and its geometry
     for tile_id, details in id_dict.items():
         print(f"Processing tile {tile_id}...")
@@ -367,6 +364,7 @@ async def process_tile_mode(processor, id_dict, extractors):
                 "tile_id": tile_id,
                 "capture_time": extract_unique_datetime_ids(tile_id),
                 "geometry": geometry,
+                "order_name": order_name,
             }
         )
 
@@ -532,6 +530,7 @@ async def process_roi_mode(
     roi_name,
     shared_geometry_path=None,
     extractors=None,
+    order_name=None,
 ):
     if not extractors:
         raise ValueError("No extractors provided for ROI mode.")
@@ -552,6 +551,7 @@ async def process_roi_mode(
             "tile_id": "",
             "capture_time": "",
             "geometry": shared_geometry,
+            "order_name": order_name,
         }
     )
 
@@ -672,6 +672,7 @@ async def process_directory(
     roi_name=None,
     shared_geometry_path=None,
     extractors=None,
+    order_name=None,
 ):
 
     id_dict = existing_files_dictionary(directory)
@@ -683,10 +684,15 @@ async def process_directory(
         if not roi_name:
             raise ValueError("ROI mode requires a `roi_name` to be provided.")
         await process_roi_mode(
-            processor, id_dict, roi_name, shared_geometry_path, extractors
+            processor,
+            id_dict,
+            roi_name,
+            shared_geometry_path,
+            extractors,
+            order_name=order_name,
         )
     elif mode == "tile":
-        await process_tile_mode(processor, id_dict, extractors)
+        await process_tile_mode(processor, id_dict, extractors, order_name=order_name)
     else:
         raise ValueError("Unknown mode. Must be 'tile' or 'roi'.")
 
@@ -746,6 +752,7 @@ async def process_all_subfolders(parent_directory, processor, extractors):
                     mode="roi",
                     extractors=extractors,
                     roi_name=folder_name,
+                    order_name=folder_name,
                 )
             else:
                 print(f"📁 Detected TILE folder: {folder_name}")
@@ -754,6 +761,7 @@ async def process_all_subfolders(parent_directory, processor, extractors):
                     processor=processor,
                     mode="tile",
                     extractors=extractors,
+                    order_name=folder_name,
                 )
 
             print(f"✅ Finished processing folder: {folder_name}")
