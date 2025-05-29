@@ -2,8 +2,8 @@ from coastseg_planet import download
 from planet import Auth
 import os
 import asyncio
-import json
 import geopandas as gpd
+
 # 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
 CLOUD_COVER = 0.70
 
@@ -18,21 +18,31 @@ order_name = f"DUCK_pier_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_d
 
 # 3. insert path to roi geojson
 # roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\boardwalk\roi.geojson"
-roi_path = os.path.join(os.getcwd(),"sample_data", "rois.geojson")
+roi_path = os.path.join(os.getcwd(), "sample_data", "rois.geojson")
 roi = gpd.read_file(roi_path)
 
-# 4. read the api key from the config file and set it in the environment
+# 4. Decide what tools to use
+# Available tools are:
+#  clip: clip the images to the ROI
+#  toar: convert the images to TOAR
+#  coregister: coregister the images to the image with the lowest cloud cover
+# Example using all the available tools : tools = {"clip", "toar", "coregister"}
+tools = {"clip", "toar"}
+
+# 5. read the api key from the config file and set it in the environment
 # Enter the API key into config.ini with the following format
 # [DEFAULT]
 # API_KEY = <PLANET API KEY>
 
-config_filepath = os.path.join(os.getcwd(),"config.ini")
+config_filepath = os.path.join(os.getcwd(), "config.ini")
 if os.path.exists(config_filepath) is False:
     raise FileNotFoundError(f"Config file not found at {config_filepath}")
 config = download.read_config(config_filepath)
 # set the API key in the environment and store it
-if config.get("DEFAULT","API_KEY") == "":
-    raise ValueError("API_KEY not found in config file. Please enter your API key in the config file and try again")
+if config.get("DEFAULT", "API_KEY") == "":
+    raise ValueError(
+        "API_KEY not found in config file. Please enter your API key in the config file and try again"
+    )
 os.environ["API_KEY"] = config["DEFAULT"]["API_KEY"]
 auth = Auth.from_env("API_KEY")
 auth.store()
@@ -49,12 +59,12 @@ asyncio.run(
         roi,
         start_date,
         end_date,
-        overwrite=False,            # if True will overwrite an existing order with the same name and download the new one
-        continue_existing=False,    # if True will continue downloading an existing order with the same name
+        overwrite=False,  # if True will overwrite an existing order with the same name and download the new one
+        continue_existing=False,  # if True will continue downloading an existing order with the same name
         cloud_cover=CLOUD_COVER,
         product_bundle="analytic_udm2",
-        coregister=False,           # if True will coregister the images to the image with the lowest cloud cover using Planet's coregistration service
-        min_area_percentage=0.5,    # minimum area percentage of the ROI's area that must be covered by the images to be downloaded
+        min_area_percentage=0.5,  # minimum area percentage of the ROI's area that must be covered by the images to be downloaded
+        tools=tools,  # tools to use on the order see: https://docs.planet.com/develop/apis/subscriptions/tools/ for list of tools available
     )
 )
 
