@@ -632,42 +632,34 @@ async def download_order_by_name(
             )
 
 
-def filter_ids_by_date(items: List[dict], month_filter: List[str]) -> List[str]:
+def filter_ids_by_date(
+    items: List[dict], month_filter: List[str]
+) -> Dict[str, List[str]]:
     """
     Get a dictionary of Image IDs grouped based on the acquired date of the items.
-    These ids are ordered by acquired date.
+    These ids are ordered by acquired date, and only include dates from the specified months.
 
-    args:
+    Args:
         items (list): A list of items.
-        month_filter (list): A list of months to filter the acquired dates by.
+        month_filter (list): A list of months (as 'MM' strings) to filter the acquired dates by.
 
-    returns:
-        dict: A dictionary of Image IDs grouped by acquired date.
-        ex. {"2023-06-27":[1234a,33445g],"2023-06-28":[2345c,4f465c]}
+    Returns:
+        dict: A dictionary of Image IDs grouped by acquired date, sorted by date.
+              Example: {"2023-06-27": ["1234a", "33445g"], "2023-06-28": ["2345c", "4f465c"]}
     """
     if not month_filter:
         month_filter = [str(i).zfill(2) for i in range(1, 13)]
 
-    acquired_dates = [get_acquired_date(item) for item in items]
-    unique_acquired_dates = set(acquired_dates)
-
-    # filter the unique acquired dates based on the month filter
-    unique_acquired_dates = [
-        date for date in unique_acquired_dates if date.split("-")[1] in month_filter
-    ]
-
-    # print the first 2 unique acquired dates
-    # print(f"Unique acquired dates: {list(unique_acquired_dates)[:2]}")
-    # sort the unique acquired dates
-    unique_acquired_dates = sorted(unique_acquired_dates)
     ids_by_date = get_ids_by_date(items)
 
-    # for each key in the dictionary drop the keys whose month is not in the month filter
-    for key in list(ids_by_date.keys()):
-        if key.split("-")[1] not in month_filter:
-            ids_by_date.pop(key)
+    # Filter and sort the dictionary by date
+    filtered_sorted_ids = {
+        date: ids_by_date[date]
+        for date in sorted(ids_by_date.keys())
+        if date.split("-")[1] in month_filter
+    }
+    return filtered_sorted_ids
 
-    return ids_by_date
 
 
 def get_ids(items, month_filter: list = None) -> List[str]:
@@ -1064,6 +1056,12 @@ async def get_item_list(roi, start_date, end_date, **kwargs):
 
         if item_list == []:
             print(
+                f"No items found that matched the search criteria were found.\n\
+                  start_date: {start_date}\n\
+                  end_date: {end_date}\n\
+                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
+            )
+            raise ValueError(
                 f"No items found that matched the search criteria were found.\n\
                   start_date: {start_date}\n\
                   end_date: {end_date}\n\
