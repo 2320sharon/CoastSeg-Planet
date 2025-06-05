@@ -2,8 +2,6 @@ from coastseg_planet import download
 from planet import Auth
 import os
 import asyncio
-import json
-import geopandas as gpd
 from coastseg_planet.orders import Order, OrderConfig
 
 # 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
