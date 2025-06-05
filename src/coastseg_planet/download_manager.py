@@ -15,8 +15,34 @@ from tqdm.asyncio import tqdm_asyncio
 from coastseg_planet.config import TILE_STATUSES, CLOUD_COVER, MIN_AREA_PERCENT
 from coastseg_planet import download
 from coastseg_planet.orders import Order
-from coastseg_planet.db import DuckDBInterface
+from coastseg_planet.db.base import BaseDuckDB
+
 from coastseg_planet.processor import TileProcessor
+
+
+def read_geometry_from_metadata(file: str) -> dict:
+    """
+    Reads the geometry from a PlanetLabs metadata JSON file and returns it as a dictionary.
+    Note: Expects the file to contains a "geometry" key at the top level.
+
+    Args:
+        file (str): The path to the metadata JSON file.
+
+    Returns:
+        dict: The geometry extracted from the metadata file.
+        Example: {'coordinates': [[[], ... []]], 'type': 'Polygon'}
+
+    """
+    with open(file, "r") as f:
+        metadata = json.load(f)
+    return metadata["geometry"]
+
+
+def read_geometry_from_file(filepath: str) -> dict:
+    filename = os.path.basename(filepath)
+    if "metadata.json" in filename:
+        return read_geometry_from_metadata(filepath)
+    return None
 
 
 def extract_unique_datetime_ids(items: Union[str, List[str]]) -> Union[str, Set[str]]:
@@ -81,7 +107,7 @@ class DownloadManager:
     def __init__(
         self,
         processor: TileProcessor,
-        db: DuckDBInterface,
+        db: BaseDuckDB,
         planet_session: planet.Session,
         client: Optional[OrdersClient] = None,
         order_semaphore: asyncio.Semaphore = asyncio.Semaphore(5),
@@ -92,7 +118,7 @@ class DownloadManager:
 
         Args:
             processor (TileProcessor): The processor to handle tile processing, this handles queuing and processing of the tiles before entering the database.
-            db (DuckDBInterface): The database interface for storing metadata about the downloaded tiles.
+            db (BaseDuckDB): The database interface for storing metadata about the downloaded tiles.
             planet_session (planet.Session): The Planet session to use for API requests. This is shared across all clients.
             client (planet.Client): The Planet Orders client to use for API requests to the orders API.
             order_semaphore (asyncio.Semaphore): Semaphore for limiting concurrent order creation.
@@ -104,12 +130,7 @@ class DownloadManager:
         """
         self.planet_session = planet_session
 
-        self._orders_client = client  # backing attribute
-        # if client is None:
-        #     self.orders_client = self.create_order_client()
-        # else:
-        #     self.orders_client = client
-
+        self._orders_client = client # This will be initialized later if not provided
         self.processor = processor
         self.db = db
         self.order_semaphore = order_semaphore
@@ -244,6 +265,13 @@ class DownloadManager:
                 for order_id in success_order_ids:
                     # this gets a JSON description of the order
                     existing_order = await self.orders_client.get_order(order_id)
+                    # If the clip tool was not used then we need to download the entire tile
+                    clip_tool = existing_order.get("tools", {}).get("clip", False)
+                    print(f"Clip tool is {'enabled' if clip_tool else 'disabled'}")
+                    tile_mode = (
+                        not clip_tool
+                    )  # if the clip tool is not used then we are in tile mode
+                    print(f"Tile mode is {'enabled' if tile_mode else 'disabled'}")
 
                     # read the ROI's id and geometry from the order
                     roi = read_roi_from_order(order)
@@ -258,10 +286,11 @@ class DownloadManager:
                         "destination": destination,
                         "roi_id": roi_id,
                         "roi_geometry": roi_geometry,
+                        "tile_mode": tile_mode,
                     }
                     orders_to_download.append(order_to_download)
 
-                    # @todo check if the order is already downloaded and remobe the files that are already downloaded
+                    # @todo check if the order is already downloaded and remove the files that are already downloaded
                     # if not await self.check_if_order_downloaded(roi_id, order.name):
 
                 # @todo: Note in the future we can use files_to_skip to skip files that are already downloaded
@@ -273,15 +302,12 @@ class DownloadManager:
                             order["destination"],
                             order["roi_id"],
                             order["roi_geometry"],
+                            tile_mode=order["tile_mode"],
                         )
                         for order in orders_to_download
                     ]
                 )
-            else:
-                # create a new order
-
-                # this creates the new orders and downloads the order @todo remove this later
-                # await self.create_new_order(self.planet_session, order)
+            else:  # create a new order
 
                 # what we actually want is to create the new order, then download it
                 order_requests = await self.create_new_order_requests(
@@ -290,6 +316,7 @@ class DownloadManager:
                 # this creates and downloads the new order
                 await self.download_new_order(order, order_requests)
 
+            # @todo I think running ids can be handled in a similar way to success ids
             # elif running_order_ids:
             #     order_id = running_order_ids[0]
             #     existing_order = await self.orders_client.get_order(order_id)
@@ -300,16 +327,6 @@ class DownloadManager:
             #     # check if the order is already downloaded
             #     if not await self.check_if_order_downloaded(roi_id, order.name):
             #         await self.download_order(existing_order, order.destination, roi_id, roi_geometry)
-            # else:
-            #     # create a new order
-            #     new_order = await self.create_order(order.get_order())
-            #     roi_geometry = self.extract_geometry(new_order)
-            #     roi_id = self.db.get_roi_id_by_name(order.name)
-            #     if roi_geometry is None:
-            #         raise ValueError(f"Order {order.name} does not have a valid geometry.")
-            #     # download the new order
-            #     await self.download_order(new_order, order.destination, roi_id, roi_geometry)
-
     async def download_order(
         self,
         order: str,
@@ -317,6 +334,7 @@ class DownloadManager:
         roi_id: str,
         roi_geometry: dict,
         files_to_skip: list = None,
+        tile_mode: bool = False,
     ):
         """
         Downloads the order and its items to the specified directory.
@@ -332,6 +350,7 @@ class DownloadManager:
                 }
             files_to_skip (list): A list of files to skip downloading.
                 If None, all files will be downloaded.
+            tile_mode (bool): If True, this means that entire tiles are being downloaded instead of clipped ROIs.
 
         Returns:
             None
@@ -371,28 +390,33 @@ class DownloadManager:
             total=len(items_to_download) + len(manifest_items),
             desc=f"Downloading order {order['name']}",
         )
+
         # these functions insert the manifest and tile ids into the database
         await self.insert_order_manifest(
             manifest_items, roi_id, order_id, roi_geometry, progress
         )
-        await self.insert_roi_ids(items_to_download, roi_id, roi_geometry)
+        if tile_mode:
+            await self.insert_tile_ids(items_to_download, roi_geometry)
+        else:
+            await self.insert_roi_ids(items_to_download, roi_id, roi_geometry)
 
+        # @todo make this instead create a list of asyncio tasks and then await them all at once
+        tasks = []
         for item in items_to_download:
             print(f'tile_id: {"_".join(item["filename"].split("_")[:4])}')
-            await self.processor.process(
-                {
-                    "action": "update_metadata_roi",
-                    "roi_id": roi_id,
-                    "tile_id": "_".join(item["filename"].split("_")[:4]),
-                    "order_id": order_id,
-                    "filepath": item["directory"] / item["filename"],
-                    "status": TILE_STATUSES["PENDING"],
-                }
-            )
-            await self.download_with_retry(
-                item, roi_id, order_id, "update_metadata_roi", roi_geometry, progress
-            )
+            if tile_mode:
+                tasks.append(
+                    self.download_tile(item, order_id, roi_geometry, progress, roi_id)
+                )
+            # if the tile mode is not being used then we are using the roi mode and we need to insert the roi id into the database
+            else:
+                tasks.append(
+                    self.download_ROI(item, roi_id, order_id, roi_geometry, progress)
+                )
 
+        # Start the download tasks with a semaphore to limit concurrency
+        async with self.download_semaphore:
+            await asyncio.gather(*tasks)
         progress.close()
 
     async def insert_order_manifest(
@@ -466,6 +490,101 @@ class DownloadManager:
                 }
             )
 
+    async def download_tile(
+        self,
+        item: dict,
+        order_id: str,
+        roi_geometry: dict,
+        progress: tqdm_asyncio,
+        roi_id: str = "",
+    ):
+        await self.processor.process(
+            {
+                "action": "update_metadata_tile",
+                "tile_id": "_".join(item["filename"].split("_")[:4]),
+                "order_id": order_id,
+                "filepath": item["directory"] / item["filename"],
+                "status": TILE_STATUSES["PENDING"],
+            }
+        )
+        await self.download_with_retry(
+            item,
+            roi_id,
+            order_id,
+            "update_metadata_tile",
+            roi_geometry,
+            progress,
+        )
+
+        # read the geometry out of metadata.json and update the tile to have the exact geometry
+        # after the tile is downloaded lets check if it was a metadata.json then read the geometry from it
+        geometry = read_geometry_from_file(item["directory"] / item["filename"])
+        if geometry is not None:
+            self.update_tile_ids(
+                item,
+                geometry=geometry,
+            )
+
+    async def download_ROI(
+        self,
+        item: dict,
+        roi_id: str,
+        order_id: str,
+        roi_geometry: dict,
+        progress: float,
+    ):
+        """
+        Downloads the ROI item and updates the database with its status.
+        """
+        await self.processor.process(
+            {
+                "action": "update_metadata_roi",
+                "roi_id": roi_id,
+                "tile_id": "_".join(item["filename"].split("_")[:4]),
+                "order_id": order_id,
+                "filepath": item["directory"] / item["filename"],
+                "status": TILE_STATUSES["PENDING"],
+            }
+        )
+        await self.download_with_retry(
+            item, roi_id, order_id, "update_metadata_roi", roi_geometry, progress
+        )
+
+    async def update_tile_ids(
+        self, items: List[Dict[str, Any]], geometry: Dict[str, Any]
+    ) -> None:
+        """
+        Extracts unique tile IDs from filenames and queues them for insertion.
+
+        Example:
+            items = [
+                {"filename": "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"},
+                {"filename": "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"},
+            ]
+            geometry = {"type": "Polygon", "coordinates": [...]}
+
+        Args:
+            items (List[Dict[str, Any]]): List of dicts with a 'filename' key.
+            geometry (Dict[str, Any]): ROI geometry as GeoJSON. MUST contain "coordinates" as a top-level key.
+
+        Returns:
+            None
+        """
+        if not isinstance(items, list):
+            items = [items]
+
+        # get the tile id from the filename example: "20241004_223419_50_24b7" from "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"
+        unique_ids = set("_".join(item["filename"].split("_")[:4]) for item in items)
+        unique_ids.discard("manifest.json")
+        for tile_id in unique_ids:
+            await self.processor.process(
+                {
+                    "action": "update_tile",
+                    "tile_id": tile_id,
+                    "geometry": geometry,
+                }
+            )
+
     async def insert_roi_ids(
         self, items: List[Dict[str, Any]], roi_id: str, roi_geometry: Dict[str, Any]
     ) -> None:
@@ -491,6 +610,7 @@ class DownloadManager:
         # get the tile id from the filename example: "20241004_223419_50_24b7" from "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"
         unique_ids = set("_".join(item["filename"].split("_")[:4]) for item in items)
         unique_ids.discard("manifest.json")
+        # @todo: I'm pretty sure that we only need to insert the roi id once
         for tile_id in unique_ids:
             await self.processor.process(
                 {
@@ -569,6 +689,52 @@ class DownloadManager:
         )
         progress.update(1)
 
+    async def filter_items(
+        self,
+        session,
+        roi_dict,
+        start_date,
+        end_date,
+        cloud_cover,
+        min_area_percentage,
+        roi_gdf,
+        months_filter,
+        tools,
+    ):
+        item_list = await download.search_for_items(
+            session, roi_dict, start_date, end_date, cloud_cover=cloud_cover
+        )
+
+        # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
+        print(f"Number of items to download before filtering by area: {len(item_list)}")
+        item_list = download.filter_items_by_area(
+            roi_gdf, item_list, min_area_percentage
+        )
+        print(f"Number of items to download after filtering by area: {len(item_list)}")
+
+        ids = download.get_ids(item_list, months_filter)
+
+        # if the clip tool is not being used filter the ids to download by making sure they don't already exist in the tiles table
+        if not tools.get("clip", False):
+            print(f"requested ids: {ids}")
+            # this is the ids that are NOT in the database
+            ids = self.processor.filter_existing_tile_ids(ids)
+            # filter items list so that it only contains these ids
+            item_list = [item for item in item_list if item["id"] in ids]
+            print(
+                f"Number of items to download after filtering by existing tile ids: {len(item_list)}"
+            )
+            print(f"item_list: {item_list}")
+            print(f"ids after filtering: {ids}")
+            if not ids:
+                print(
+                    f"No items to download after filtering by existing tile ids. Exiting."
+                )
+                raise ValueError(
+                    "No items to download after filtering by existing tile ids. Exiting."
+                )
+        return ids, item_list
+
     async def create_new_order_requests(self, session, order: Order):
         """
         Creates a series of new order requests based on the order specified in the order object.
@@ -609,18 +775,17 @@ class DownloadManager:
 
         tools = order.tools
 
-        item_list = await download.search_for_items(
-            session, roi_dict, start_date, end_date, cloud_cover=cloud_cover
+        ids, item_list = await self.filter_items(
+            session,
+            roi_dict,
+            start_date,
+            end_date,
+            cloud_cover,
+            min_area_percentage,
+            roi_gdf,
+            months_filter,
+            tools,
         )
-
-        # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
-        print(f"Number of items to download before filtering by area: {len(item_list)}")
-        item_list = download.filter_items_by_area(
-            roi_gdf, item_list, min_area_percentage
-        )
-        print(f"Number of items to download after filtering by area: {len(item_list)}")
-
-        ids = download.get_ids(item_list, months_filter)
 
         coregister_tool = tools.get("coregister", False)
         coregister_id = order_dict.get("coregister_id", "")
@@ -697,13 +862,17 @@ class DownloadManager:
                 order_id = planet_order.get("id", "")
                 # Now the order is in a downloadable state (aka '_links' in the existing order dictionary contains links to download the order contents)
                 existing_order = await self.orders_client.get_order(order_id)
+                clip_tool = existing_order.get("tools", {}).get("clip", False)
+                tile_mode = (
+                    not clip_tool
+                )  # if the clip tool is not used then we are in tile mode
 
                 print(f"planet order: {existing_order}")
                 # Immediately launch download
                 download_tasks.append(
                     asyncio.create_task(
                         self.download_order(
-                            existing_order, download_path, roi_id, roi_dict
+                            existing_order, download_path, roi_id, roi_dict, tile_mode
                         )
                     )
                 )
@@ -712,107 +881,4 @@ class DownloadManager:
             print(f"Waiting for all downloads to complete")
             await asyncio.gather(*download_tasks)
 
-    # @todo I think this function can be removed
-    async def create_new_order(self, session, order: Order):
-        """
-        Creates a series of new orders based on the order request.
-        Note: if the requested data has more than 500 files available its split into smaller suborders of less than 500
-
-        Args:
-
-                session (planet.Session): The planet session to use for the order creation.
-                order (Order): The order object containing the order details.
-
-
-
-        """
-        # get the order dictionary from the order object
-        order_dict = order.to_dict()
-        order_name = order.name
-        roi_gdf = order.get_roi_geodataframe()
-
-        # this ROI ID needs to be created in the database before the order
-        roi_id = order_dict.get("roi_id", "")
-        # if the ROI ID already exists lets check if the geometry is the same as the one in the database
-        # If the ROI ID & geometry are the same then we can use the existing ROI ID
-        # if the ROI ID is the same but the geometry is different warn the user and STOP the order creation
-        if roi_id == "":
-            raise ValueError(f"ROI ID not found in order dictionary: {order_dict}")
-        # @todo: If the ROI ID is found in the database, we should check if the ROI ID is valid and if it exists in the database.
-        # If it does exist add the order name to the ROI_ID then store it in the database
-        # self.db.validate_roi_id(roi_id)
-
-        roi_geometry = roi_gdf.geometry.values[0]
-        print(f"ROI geometry: {roi_geometry}")  # @todo remove this later
-
-        # convert the ROI to a dictionary so it can be used with the Planet API
-        roi_dict = json.loads(roi_gdf.to_json())
-        start_date, end_date = order.dates
-        cloud_cover = order_dict.get("cloud_cover", CLOUD_COVER)
-        min_area_percentage = order_dict.get("min_area_percentage", MIN_AREA_PERCENT)
-        months_filter = order.month_filter
-        download_path = order_dict.get("destination", os.getcwd())
-        product_bundle = order.product_bundle
-        item_type = order.item_type
-
-        tools = order.tools
-
-        item_list = await download.search_for_items(
-            session, roi_dict, start_date, end_date, cloud_cover=cloud_cover
-        )
-
-        # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
-        print(f"Number of items to download before filtering by area: {len(item_list)}")
-        item_list = download.filter_items_by_area(
-            roi_gdf, item_list, min_area_percentage
-        )
-        print(f"Number of items to download after filtering by area: {len(item_list)}")
-
-        ids = download.get_ids(item_list, months_filter)
-
-        coregister_tool = tools.get("coregister", False)
-        coregister_id = order_dict.get("coregister_id", "")
-        if coregister_tool:
-            coregister_id = download.get_coregister_id(item_list, ids, coregister_id)
-
-        # Split the ids list into batches of 499 or less
-        id_batches = download.create_batches(ids, id_to_coregister=coregister_id)
-        print(f"Total number of batches: {len(id_batches)}")
-
-        tool_list = download.get_tools(
-            roi=roi_dict,
-            clip=tools.get("clip", True),
-            toar=tools.get("toar", True),
-            coregister=coregister_tool,
-            id_to_coregister=coregister_id,
-        )
-
-        requests = []
-
-        for id_batch in id_batches:
-            order_name = f"{order_name}_{len(id_batch)}"
-            request = download.create_order_request(
-                order_name, id_batch, tool_list, product_bundle, item_type=item_type
-            )
-            requests.append(request)
-
-        async with self.order_semaphore:
-            # this creates an order and waits for it to be in state "success" (aka downloadable)
-            order_tasks = [self.await_order(request) for request in requests]
-
-            download_tasks = []
-            for order_coro in asyncio.as_completed(order_tasks):
-                # get the order object from the order that was created in await_order
-                planet_order = await order_coro
-                # Immediately launch download
-                download_tasks.append(
-                    asyncio.create_task(
-                        self.download_order(
-                            planet_order, download_path, roi_id, roi_geometry
-                        )
-                    )
-                )
-
-            # Wait for all downloads to complete
-            print(f"gathering all the {len(download_tasks)} download tasks")
-            await asyncio.gather(*download_tasks)
+        
