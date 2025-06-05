@@ -34,7 +34,7 @@ roi_path = (
     r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\3_DUCK\roi.geojson"
 )
 # Enter the name of the order (Note: if you want to continue an existing order, set continue_existing to True)
-order_name = f"DUCK_{start_date}_to_{end_date}"
+order_name = f"DUCK_cloud_{int(CLOUD_COVER * 100)}pct_{start_date}_to_{end_date}"
 # Create the order object to hold the order details
 order = Order(
     order_name=order_name,
