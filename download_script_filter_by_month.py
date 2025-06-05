@@ -31,12 +31,11 @@ order_name = f"DUCK_pier_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_d
 roi_path = os.path.join(os.getcwd(), "sample_data", "rois.geojson")
 roi = gpd.read_file(roi_path)
 
-# 4. read the api key from the config file and set it in the environment
+# 4. Read the api key from the config file and set it in the environment
 # Enter the API key into config.ini with the following format
 # [DEFAULT]
 # API_KEY = <PLANET API KEY>
 
-# config_filepath = os.path.join(os.getcwd(),"config.ini")
 config_filepath = r"C:\development\coastseg-planet\CoastSeg-Planet\config.ini"
 
 if os.path.exists(config_filepath) is False:
