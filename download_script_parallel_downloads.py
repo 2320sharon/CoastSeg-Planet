@@ -1,15 +1,23 @@
-from coastseg_planet import download
-from planet import Auth
 import os
 import asyncio
-import json
-import geopandas as gpd
+from planet import Auth
+from coastseg_planet import download
 from coastseg_planet.orders import Order
 
-# 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
-CLOUD_COVER = 0.70
-month_filter = ["05", "06", "07", "08", "09", "10"]
+# ----------------------------
+# USER CONFIGURATION SECTION
+# ----------------------------
 
+# Cloud cover threshold (maximum cloud cover percentage) (0.0 to 1.0)
+CLOUD_COVER = 0.70
+
+# Months of imagery to retain in the download
+# Use two-digit month numbers (e.g., "01" for January, "02" for February, etc.)
+MONTH_FILTER = ["05", "06", "07", "08", "09", "10"]
+
+# ----------------------------
+# 1. Define Orders (You can add more by copying the block)
+# ----------------------------
 
 # 1. Select a start and end date YYYY-MM-DD for each of the orders
 # 2. name the order
@@ -17,14 +25,17 @@ month_filter = ["05", "06", "07", "08", "09", "10"]
 # 3. insert path to roi geojson
 # roi_path = r"C:\development\coastseg-planet\CoastSeg-Planet\boardwalk\roi.geojson"
 
-
-start_date = "2024-07-15"
+# First order: DUCK
+start_date = "2024-07-15" # YYYY-MM-DD
 end_date = "2024-07-31"
+# Enter the 
+
 roi_path = (
     r"C:\development\coastseg-planet\CoastSeg-Planet\5_geojson\3_DUCK\roi.geojson"
 )
-order_name = f"DUCK_cloud_{CLOUD_COVER}_TOAR_enabled_{start_date}_to_{end_date}"
-# Create multiple orders
+# Enter the name of the order (Note: if you want to continue an existing order, set continue_existing to True)
+order_name = f"DUCK_{start_date}_to_{end_date}"
+# Create the order object to hold the order details
 order = Order(
     order_name=order_name,
     roi_path=roi_path,
@@ -34,11 +45,12 @@ order = Order(
     destination=os.path.join(os.getcwd(), "downloads", order_name),
     continue_existing=False,
     min_area_percentage=0.25,
-    month_filter=month_filter,
+    month_filter=MONTH_FILTER,
     tools={"clip", "toar"},  # Use clip and toar tools by default
 ).get_order()
 
-# Change the order name and roi path for each order
+# Second order: SANTA_CRUZ
+# Note: Make sure to change the order name and roi path for each order
 start_date = "2024-07-14"
 end_date = "2024-07-31"
 roi_path = (
@@ -54,16 +66,20 @@ order2 = Order(
     destination=os.path.join(os.getcwd(), "downloads", order_name),
     continue_existing=False,
     min_area_percentage=0.25,
-    month_filter=month_filter,
+    month_filter=MONTH_FILTER,
     tools={"clip", "toar"},  # Use clip and toar tools by default
 ).get_order()
 
 # I would not recommend more than 5 orders at a time. Planet API has a limit of 5 simultaneous downloads
+
 # make the list of orders
 order_list = [order, order2]
 
+# ----------------------------
+# 2. Authenticate with Planet API
+# ----------------------------
 
-# 4. read the api key from the config file and set it in the environment
+# Read the api key from the config file and set it in the environment
 # Enter the API key into config.ini with the following format
 # [DEFAULT]
 # API_KEY = <PLANET API KEY>
