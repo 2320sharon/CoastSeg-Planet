@@ -273,7 +273,7 @@ class TileProcessor:
             order_id=order_id,
         )
 
-    def filter_existing_tile_ids(self, tile_ids: List[str]):
+    def remove_existing_tile_ids(self, tile_ids: List[str]):
         """
         Filters out tile IDs that already exist in the 'tiles' table.
 
@@ -283,4 +283,4 @@ class TileProcessor:
         Returns:
             List[str]: A list of tile IDs that do NOT exist in the database.
         """
-        return self.tile_repo.filter_existing_tile_ids(tile_ids)
+        return self.tile_repo.remove_existing_tile_ids(tile_ids)
