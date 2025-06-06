@@ -71,34 +71,6 @@ class ROIRepository:
         self.db.commit()
         print(f"[SUCCESS] ROI {roi_id} inserted (if new) and linked to tile {tile_id}.")
 
-    # @todo: remove this later
-    # def insert_roi(self, roi_id, tile_id, capture_time, geom=None):
-    #     """
-    #     Inserts a new ROI record into the 'rois' table if it doesn't already exist.
-
-    #     Args:
-    #         roi_id (str): Unique identifier for the ROI.
-    #         tile_id (str): Related tile ID.
-    #         capture_time (str): Capture time in 'YYYYMMDD_HHMMSS_XX' format.
-    #         geom (dict, optional): GeoJSON geometry.
-    #     """
-    #     cursor = self.db.get_cursor()
-    #     geom_param = json.dumps(geom) if geom else None
-    #     capture_time = parse_capture_time(capture_time)
-
-    #     cursor.execute("SELECT 1 FROM rois WHERE roi_id = ?", (roi_id,))
-    #     if cursor.fetchone():
-    #         print(f"[INFO] ROI {roi_id} already exists.")
-    #         return
-
-    #     query = (
-    #         "INSERT INTO rois (roi_id, tile_id, geometry, capture_time) VALUES (?, ?, ST_GeomFromGeoJSON(?), ?)"
-    #         if geom_param
-    #         else "INSERT INTO rois (roi_id, tile_id, geometry, capture_time) VALUES (?, ?, ?, ?)"
-    #     )
-    #     cursor.execute(query, (roi_id, tile_id, geom_param, capture_time))
-    #     self.db.commit()
-
     def create_roi(self, roi_id, geom=None):
         """
         Inserts a new ROI into the 'rois' table (without linking to any tiles).
