@@ -14,6 +14,14 @@ from coastseg_planet.processor import TileProcessor
 from coastseg_planet.config import DATABASE_PATH, TILE_STATUSES
 import re
 
+# Define extractor functions
+extractors = {
+    "json": lambda path: read_json(path).get("geometry", {}),
+    "xml": lambda path: xml_to_geojson_polygon(path).get("geometry"),
+    "analytic": lambda path: read_from_tif(path).get("geometry"),
+    "udm": lambda path: read_from_tif(path).get("geometry"),
+}
+
 
 async def insert_order(folder_path: str, processor):
     """
@@ -186,25 +194,9 @@ def xml_to_geojson_polygon(xml_path, geojson_path=None):
     return geojson
 
 
-# Define extractor functions
-extractors = {
-    "json": lambda path: read_json(path).get("geometry", {}),
-    "xml": lambda path: xml_to_geojson_polygon(path).get("geometry"),
-    "analytic": lambda path: read_from_tif(path).get("geometry"),
-    "udm": lambda path: read_from_tif(path).get("geometry"),
-}
-
-
 def read_json(file):
     with open(file, "r") as f:
         return json.load(f)
-
-
-# def extract_geometry(metadata_file):
-#     if metadata_file and os.path.exists(metadata_file):
-#         metadata = read_json(metadata_file)
-#         return metadata.get("geometry", {})
-#     return {}
 
 
 def extract_geometry(
@@ -309,42 +301,6 @@ def extract_unique_datetime_ids(items: Union[str, List[str]]) -> Union[str, Set[
     return unique_ids
 
 
-# async def process_tile_mode(processor, id_dict):
-#     # Insert each tile and its geometry
-#     for tile_id, details in id_dict.items():
-#         print(f"Processing tile {tile_id}...")
-#         metadata_file = details["metadata"]
-#         if not metadata_file:
-#             print(f"Skipping tile {tile_id}: No metadata found.")
-#             continue
-#         geometry = extract_geometry(metadata_file)
-#         print(f"Extracted geometry for tile {tile_id}: {geometry}")
-#         # this inserts the tile into the database
-#         await processor.process(
-#             {
-#                 "action": "insert_tile",
-#                 "tile_id": tile_id,
-#                 "capture_time": extract_unique_datetime_ids(tile_id),
-#                 "geometry": geometry,
-#             }
-#         )
-
-#     # Insert associated files after tiles (FK constraint)
-#     for tile_id, details in id_dict.items():
-#         for filepath in details["files"]:
-#             await processor.process(
-#                 {
-#                     "action": "update_metadata_tile",
-#                     "tile_id": tile_id,
-#                     "order_id": None,
-#                     "filepath": filepath,
-#                     "status": TILE_STATUSES["DOWNLOADED"],
-#                 }
-#             )
-
-#     print("✅ Inserted all tiles and files in tile mode.")
-
-
 async def process_tile_mode(processor, id_dict, extractors, order_name=None):
     # Insert each tile and its geometry
     for tile_id, details in id_dict.items():
@@ -384,62 +340,6 @@ async def process_tile_mode(processor, id_dict, extractors, order_name=None):
             )
 
     print("✅ Inserted all tiles and files in tile mode.")
-
-
-# async def single_shared_ROI_method(shared_geometry_path, roi_name, id_dict, processor):
-#     # # Determine geometry
-#     # if shared_geometry_path:
-#     #     shared_geometry = extract_geometry_from_geojson(shared_geometry_path)
-#     # else:
-#     #     # Use first available metadata
-#     #     first_meta = next(
-#     #         (
-#     #             details["metadata"]
-#     #             for details in id_dict.values()
-#     #             if details["metadata"]
-#     #         ),
-#     #         None,
-#     #     )
-#     #     if not first_meta:
-#     #         raise FileNotFoundError("No metadata file found to extract ROI geometry.")
-#     #     shared_geometry = extract_geometry(first_meta)
-
-#     # Insert one ROI into tiles table
-#     await processor.process(
-#         {
-#             "action": "insert_roi",
-#             "roi_id": roi_name,
-#             "tile_id": "",
-#             "capture_time": "",
-#             "geometry": shared_geometry,
-#         }
-#     )
-
-#     # Associate all files with the ROI ID
-#     for tile_id, details in id_dict.items():
-#         # for each tile make a new entry in the roi_tiles table
-#         await processor.process(
-#             {
-#                 "action": "insert_roi_tile",
-#                 "roi_id": roi_name,
-#                 "tile_id": tile_id,
-#                 "capture_time": extract_unique_datetime_ids(tile_id),
-#                 "intersection": None,
-#                 "fallback_geom": shared_geometry,
-#             }
-#         )
-#         for filepath in details["files"]:
-#             filename = os.path.basename(filepath)
-#             await processor.process(
-#                 {
-#                     "action": "update_metadata_roi",
-#                     "roi_id": roi_name,
-#                     "tile_id": "_".join(filename.split("_")[:4]),
-#                     "order_id": "",
-#                     "filepath": filepath,
-#                     "status": TILE_STATUSES["PENDING"],
-#                 }
-#             )
 
 
 def extract_first_available_geometry(
