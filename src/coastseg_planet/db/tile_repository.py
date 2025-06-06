@@ -64,7 +64,7 @@ class TileRepository:
         )
         self.db.commit()
 
-    def filter_existing_tile_ids(self, tile_ids):
+    def remove_existing_tile_ids(self, tile_ids):
         """
         Filters out tile IDs that already exist in the 'tiles' table.
 
