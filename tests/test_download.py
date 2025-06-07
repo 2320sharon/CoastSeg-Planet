@@ -14,6 +14,11 @@ def test_get_ids():
         {"id": 3, "properties": {"acquired": "2023-06-29"}},
         {"id": 2, "properties": {"acquired": "2023-06-30"}},
         {"id": 4, "properties": {"acquired": "2023-07-01"}},
+        {"id": 5, "properties": {"acquired": "2023-06-27"}},
+        {"id": 1, "properties": {"acquired": "2023-06-28"}},
+        {"id": 3, "properties": {"acquired": "2023-06-29"}},
+        {"id": 2, "properties": {"acquired": "2023-06-30"}},
+        {"id": 4, "properties": {"acquired": "2023-07-01"}},
     ]
     expected_ids = [5, 1, 3, 2, 4]
 
