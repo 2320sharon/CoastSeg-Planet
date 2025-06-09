@@ -642,20 +642,16 @@ async def download_order_by_name(
         raise ValueError(
             "overwrite and continue_existing cannot both be True. As an order cannot be overwritten and continued at the same time. Please set one to False"
         )
-        raise ValueError(
-            "overwrite and continue_existing cannot both be True. As an order cannot be overwritten and continued at the same time. Please set one to False"
-        )
 
     async with planet.Session() as sess:
         cl = sess.client("orders")
 
         # check if an existing order with the same name exists
         order_ids = await get_order_ids_by_name(cl, order_name, states=order_states)
-        order_ids = await get_order_ids_by_name(cl, order_name, states=order_states)
         print(f"Matching Order ids: {order_ids}")
         if order_ids != [] and not overwrite:
             print(f"Order with name {order_name} already exists. Downloading...")
-            await get_multiple_existing_orders(
+            await download_existing_orders(
                 cl, order_ids, output_path, continue_existing=continue_existing
             )
         else:
@@ -671,9 +667,6 @@ async def download_order_by_name(
                     raise ValueError(
                         "GeoDataFrame roi must not be empty to create a new order"
                     )
-                    raise ValueError(
-                        "GeoDataFrame roi must not be empty to create a new order"
-                    )
                 if not roi.crs:
                     raise ValueError("ROI must have a CRS to create a new order")
             if isinstance(roi, dict):
@@ -681,10 +674,6 @@ async def download_order_by_name(
                     raise ValueError("ROI must not be empty to create a new order")
                 roi = gpd.GeoDataFrame.from_features(roi)
                 # assume the ROI is in epsg 4326
-                roi.set_crs("EPSG:4326", inplace=True)
-                print(
-                    f"Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS"
-                )
                 roi.set_crs("EPSG:4326", inplace=True)
                 print(
                     f"Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS"
@@ -738,17 +727,6 @@ def filter_ids_by_date(
         if date.split("-")[1] in month_filter
     }
     return filtered_sorted_ids
-
-
-def get_ids(items, month_filter: list = None) -> List[str]:
-    # Filter and sort the dictionary by date
-    filtered_sorted_ids = {
-        date: ids_by_date[date]
-        for date in sorted(ids_by_date.keys())
-        if date.split("-")[1] in month_filter
-    }
-    return filtered_sorted_ids
-
 
 
 def get_ids(items, month_filter: list = None) -> List[str]:
@@ -824,14 +802,6 @@ def get_image_id_with_lowest_cloud_cover(items):
     return image_id_with_lowest_cloud_cover
 
 
-def create_combined_filter(
-    roi: str,
-    time1: str,
-    time2: str,
-    cloud_cover: float = 0.99,
-    product_bundles="basic_analytic_4b",
-    **kwargs,
-) -> Dict[str, Any]:
 def create_combined_filter(
     roi: str,
     time1: str,
@@ -963,11 +933,6 @@ async def create_and_download(client, request, download_path: str):
         await wait_with_exponential_backoff(
             client, order["id"], callback=reporter.update_state
         )
-
-        await wait_with_exponential_backoff(
-            client, order["id"], callback=reporter.update_state
-        )
-
     # Download the order to the specified directory
     await client.download_order(order["id"], download_path, progress_bar=True)
     return order
@@ -1211,7 +1176,7 @@ async def get_item_list(roi, start_date, end_date,  **kwargs):
             ids = get_ids(item_list)
         return ids
 
-
+#@todo this function is not used anywhere, should it be removed?
 async def order_by_ids(
     roi,
     ids,
@@ -1230,21 +1195,10 @@ async def order_by_ids(
         tools = get_tools(roi, clip, toar, coregister, ids[0])
         # analytic_udm2
         # By default use the clip and TOAR tools to clip the image to the roi and convert the images from radience to TOAR reflectance
-
-        request = planet.order_request.build_request(
-            name=order_name,
-            products=[
-                planet.order_request.product(
-                    item_ids=ids,
-                    product_bundle="ortho_analytic_4b",
-                    item_type="PSScene",
-                )
-            ],
-            tools=tools,
-        )
+        request = create_order_request(order_name,ids,tools=tools,product_bundle="ortho_analytic_4b",item_type="PSScene")
 
         # Create and download the order
-        order = await create_and_download(cl, request, download_path)
+        await create_and_download(cl, request, download_path)
 
 
 async def process_order_batch(
@@ -1255,17 +1209,28 @@ async def process_order_batch(
     download_path,
     product_bundle="ortho_analytic_4b",
 ):
+    """
+    Asynchronously processes a batch of order IDs by creating and downloading an order.
+    Args:
+        cl: The client object used to interact with the ordering API.
+        ids_batch (list): A list of item IDs to include in the order.
+        tools (list): A list of tools or processing steps to apply to the order.
+        order_name_base (str): The base name for the order; the batch size will be appended.
+        download_path (str): The local file system path where the downloaded data will be saved.
+        product_bundle (str, optional): The product bundle to request. Defaults to "ortho_analytic_4b".
+    Returns:
+        None
+    Raises:
+        Any exceptions raised by `create_order_request` or `create_and_download` will propagate.
+    """
     order_name = f"{order_name_base}_{len(ids_batch)}"
-    request = planet.order_request.build_request(
-        name=order_name,
-        products=[
-            planet.order_request.product(
-                item_ids=ids_batch, product_bundle=product_bundle, item_type="PSScene"
-            )
-        ],
-        tools=tools,
-    )
 
+    request = create_order_request(order_name=order_name,
+        ids=ids_batch,
+        tools=tools,
+        product_bundle=product_bundle,
+        item_type="PSScene",
+    )
     # Create and download the order
     await create_and_download(cl, request, download_path)
 
@@ -1527,7 +1492,7 @@ async def get_existing_order(
         return None
 
 
-async def get_multiple_existing_orders(
+async def download_existing_orders(
     client,
     order_ids,
     download_path="downloads",
