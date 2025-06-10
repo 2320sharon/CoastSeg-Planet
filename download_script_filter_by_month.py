@@ -83,4 +83,4 @@ asyncio.run(
 
 if os.path.exists(output_path):
     print(f"Order saved to {output_path}")
-    print(f"Ready for processing")
+    print("Ready for processing")

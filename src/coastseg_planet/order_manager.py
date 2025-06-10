@@ -1,20 +1,11 @@
-import json
-import os
-from typing import Any, Dict, List, Optional
-import asyncio
-import planet
-import geopandas as gpd
-from planet.clients.orders import OrderStates
-from coastseg_planet.orders import Order, OrderConfig
-
-# from coastseg_planet.order_request import OrderRequest,load_request_from_config
-
-from coastseg_planet import download
 import logging
-from coastseg_planet.config import TILE_STATUSES, CLOUD_COVER
+from typing import Any, Dict, List, Set, Union
+import planet
+from coastseg_planet.orders import Order, OrderConfig
+from coastseg_planet import download
 
 
-# @todo make this able to add tools to the orde
+# @todo this function is unused, consider removing it or integrating it into the Order class
 def prepare_order(
     order_name: str,
     roi_path: str,
@@ -28,6 +19,7 @@ def prepare_order(
     coregister_id: str = "",
     continue_existing: bool = False,
     month_filter: List[str] = None,
+    tools: Union[Set[str], Dict[str, bool]] = None,
 ) -> Order:
     """
     Creates and returns an Order object after validating all input parameters.
@@ -48,6 +40,7 @@ def prepare_order(
         coregister_id=coregister_id,
         continue_existing=continue_existing,
         month_filter=month_filter or [f"{i:02}" for i in range(1, 13)],
+        tools=tools,
     )
 
     order = Order(orderconfig)
@@ -233,27 +226,28 @@ class OrderManager:
         Returns:
             dict: The order details.
         """
-        # @todo remove this and uncomment the code below
-        await asyncio.sleep(1)  # Simulate some processing time
-        return None
-
-        # # First create the order and wait for it to be created
-        # with planet.reporting.StateBar(state="creating") as reporter:
-        #     logging.info(f"Order {order['name']} created. Waiting for completion...")
-        #     order = await self.client.create_order(request)
-        #     reporter.update(state="created", order_id=order["id"])
-        #     await download.wait_with_exponential_backoff(client, order["id"], callback=reporter.update_state)
-        # return order
+        # First create the order and wait for it to be created
+        with planet.reporting.StateBar(state="creating") as reporter:
+            logging.info(f"Order {order['name']} created. Waiting for completion...")
+            order = await self.client.create_order(request)
+            reporter.update(state="created", order_id=order["id"])
+            await download.wait_with_exponential_backoff(
+                self.client, order["id"], callback=reporter.update_state
+            )
+        return order
 
     async def get_existing_order(self, order_name: str, order_states: list[str]):
         """
-        Checks for an existing order by name; if none found, creates a new one.
+        Checks for an existing order by name.
+        If no order with the given name exists, it will return None.
         If an order with the same name exists, it will be returned.
 
         Parameters:
             order_name (str): The name of the order to check for.
             order_states (list[str]): A list of order states to filter by.
             Example: ["success", "running"]
+        Returns:
+            Optional[Dict[str, Any]]: The order if it exists, otherwise None.
 
         """
         order_ids = await download.get_order_ids_by_name(
@@ -280,32 +274,3 @@ class OrderManager:
                 return aoi
         # If the 'clip' tool is not found, return None
         return None
-
-    def get_tool_from_order(
-        self, order: Dict[str, Any], tool_name: str
-    ) -> Dict[str, Any]:
-        """
-        Retrieves the first tool from the order whose key includes the specified tool_name.
-
-        Args:
-            order (Dict[str, Any]): A dictionary containing an order with a "tools" key,
-                which is a list of single-key dictionaries representing tools.
-            tool_name (str): The name (or substring) of the tool to search for.
-
-        Returns:
-            Dict[str, Any]: The first matching tool dictionary, or an empty dictionary if no match is found.
-
-        Example:
-            >>> order = {
-            ...     "tools": [
-            ...         {"clip": {"aoi": {"type": "Polygon", "coordinates": [...]}}},
-            ...         {"toar": {"scale_factor": 10000}}
-            ...     ]
-            ... }
-            >>> get_tool_from_order(order, "clip")
-            {{"aoi": {"type": "Polygon", "coordinates": [...]}}}
-        """
-        for tool in order.get("tools", []):
-            if tool_name in tool:
-                return tool[tool_name]
-        return {}

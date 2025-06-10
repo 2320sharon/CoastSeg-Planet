@@ -803,6 +803,25 @@ class DownloadManager:
         months_filter,
         tools,
     ):
+        """
+        Filters satellite image items based on area coverage, date range, cloud cover, and existing database entries.
+        Args:
+            session: A planet session object for making API requests.
+            roi_dict (dict): Dictionary defining the region of interest (ROI) for the search.
+            start_date (str or datetime): Start date for filtering items.
+            end_date (str or datetime): End date for filtering items.
+            cloud_cover (float): Maximum allowed cloud cover percentage for items.
+            min_area_percentage (float): Minimum percentage of the ROI that an item must cover to be included.
+            roi_gdf (GeoDataFrame): GeoDataFrame representing the ROI geometry for spatial filtering.
+            months_filter (list or set): List or set of months to filter items by acquisition date.
+            tools (dict): Dictionary of tool flags (e.g., {"clip": True/False}) to control filtering behavior.
+        Returns:
+            tuple: A tuple containing:
+                - ids (list): List of filtered item IDs to download.
+                - item_list (list): List of filtered item metadata dictionaries.
+        Raises:
+            ValueError: If no items remain after filtering by existing tile IDs.
+        """
         item_list = await download.search_for_items(
             session, roi_dict, start_date, end_date, cloud_cover=cloud_cover
         )

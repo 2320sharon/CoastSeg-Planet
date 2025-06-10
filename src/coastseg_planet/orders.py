@@ -6,6 +6,7 @@ from typing import List
 import json
 import yaml
 from shapely.geometry import shape, Polygon
+from typing import Union, Set, Dict
 
 
 # ---------------------
@@ -72,6 +73,12 @@ class OrderConfig:
     coregister_id: str - ID of the coregistered order.
     continue_existing: bool - Whether to continue an existing order.
     month_filter: List[str] - List of months to filter the order (01 to 12).
+    product_bundle: str - Product bundle to use (default is "analytic_udm2").
+    item_type: str - Item type to use (default is "PSScene").
+    tools: Union[Set[str], Dict[str, bool]] - Tools to apply to the order.
+    - If a set, it contains tool names like "clip", "toar".
+    - If a dict, it contains tool names as keys and boolean values indicating whether to apply the tool.
+
     """
 
     order_name: str
@@ -90,6 +97,7 @@ class OrderConfig:
     )
     product_bundle: str = "analytic_udm2"
     item_type: str = "PSScene"
+    tools: Union[Set[str], Dict[str, bool]] = field(default_factory=set)
 
 
 # ---------------------
@@ -135,23 +143,46 @@ class Order:
 
     """
 
-    default_tools = {
-        "clip": True,
-        "toar": True,
-        "coregister": False,
-        "coregister_id": "",
-    }
+    # default_tools = {
+    #     "clip": True,
+    #     "toar": True,
+    #     "coregister": False,
+    #     "coregister_id": "",
+    # }
 
-    def __init__(self, config: OrderConfig, tools: dict = None):
+    def __init__(self, config: OrderConfig):
         self.config = config
-        self._tools = {**self.default_tools, **(tools or {})}
         self._status = OrderStatus.NOT_FOUND
         self._available = False
+        self._tools = self.set_tools(config.tools)
 
         self.validate()
 
         self._status = OrderStatus.SUCCESSFUL
         self._available = True
+
+    def set_tools(self, tools: Union[Set[str], Dict[str, bool]]):
+        """
+        Set the tools for the order.
+        Args:
+            tools (Union[Set[str], Dict[str, bool]]): Tools to apply to the order.
+                - If a set, it contains tool names like "clip", "toar".
+                - If a dict, it contains tool names as keys and boolean values indicating whether to apply the tool.
+        Returns:
+            dict: A dictionary of tools with their settings.
+        Raises:
+            TypeError: If tools is not a dict, set, or None.
+        """
+        if isinstance(tools, set):
+            return {**{tool: True for tool in tools}}
+        elif isinstance(tools, dict):
+            return {**tools}
+        elif tools is None:
+            return {}
+        elif isinstance(tools, list):
+            return {**{tool: True for tool in tools}}
+        else:
+            raise TypeError("tools must be a dict, set, or None")
 
     def __repr__(self):
         return (
@@ -200,7 +231,6 @@ class Order:
         Raises:
             KeyError, OrderValidationError: If required keys are missing or validation fails.
         """
-        tools = config.get("tools", {})
         order = cls(
             OrderConfig(
                 order_name=config["order_name"],
@@ -215,10 +245,11 @@ class Order:
                 coregister_id=config.get("coregister_id", ""),
                 continue_existing=config.get("continue_existing", False),
                 month_filter=config.get(
-                    "month_filter", [f"{i:02}" for i in range(1, 13)]
+                    "month_filter",
+                    [f"{i:02}" for i in range(1, 13)],
+                    tools=config.get("tools", {}),
                 ),
             ),
-            tools=tools,
         )
         order.validate()
         return order

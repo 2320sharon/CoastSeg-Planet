@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import numpy as np
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import geopandas as gpd
@@ -14,15 +15,28 @@ import rasterio
 from rasterio.transform import Affine
 from shapely import geometry
 from skimage.transform import resize
-import rasterio
-from rasterio.transform import Affine
 from tqdm.asyncio import tqdm_asyncio
-
 import planet
-from planet import (
-    collect,
-    data_filter,
-)
+
+from coastseg_planet.orders import Order
+
+
+def normalize_order_states(order_states):
+    """
+    Normalize the order_states input to always be a non-empty list of states.
+    If the input is None or an empty list, it defaults to ["success", "running"].
+
+    Args:
+        order_states (str, list, or None): The input order states.
+
+    Returns:
+        list: A list of order state strings.
+    """
+    if order_states is None or order_states == []:
+        return ["success", "running"]
+    if isinstance(order_states, str):
+        return [order_states]
+    return order_states
 
 
 async def query_planet_items(
@@ -70,7 +84,6 @@ async def query_planet_items(
             f"  cloud_cover: {defaults.get('cloud_cover', 0.99)}"
         )
     return item_list
-
 
 
 async def await_order(
@@ -267,7 +280,7 @@ async def search_for_items(session, roi_dict, start_date, end_date, **kwargs):
     return item_list
 
 
-async def download_multiple_orders_in_parallel(order_list):
+async def download_multiple_orders_in_parallel(order_list: List[Order]):
     """
     Takes a list of dictionaries representing orders and downloads them in parallel,
     with a progress bar showing the progress of all orders.
@@ -282,34 +295,36 @@ async def download_multiple_orders_in_parallel(order_list):
     tasks = []
 
     for order_item in order_list:
-        # Load ROI GeoDataFrame from file path provided in the order dictionary
-        roi = gpd.read_file(order["roi_path"])
-        order = order_item.to_dict()
+        order_dict = order_item.to_dict()
+        roi_path = order_dict["roi_path"]
+        roi = gpd.read_file(roi_path)
 
-        print(f"Order received with name {order['order_name']}.")
+        print(f"Order received with name {order_dict['order_name']}.")
 
         # If 'tools' is present, pass it to download_order_by_name, else use booleans
         task_kwargs = dict(
-            order_name=order["order_name"],
-            output_path=order["destination"],
+            order_name=order_dict["order_name"],
+            output_path=order_dict["destination"],
             roi=roi,
-            start_date=order["start_date"],
-            end_date=order["end_date"],
-            cloud_cover=order.get("cloud_cover", 0.7),  # Default to 0.7 if not provided
-            min_area_percentage=order.get(
+            start_date=order_dict["start_date"],
+            end_date=order_dict["end_date"],
+            cloud_cover=order_dict.get(
+                "cloud_cover", 0.7
+            ),  # Default to 0.7 if not provided
+            min_area_percentage=order_dict.get(
                 "min_area_percentage", 0.7
             ),  # Default to 0.7 if not provided
-            coregister=order.get("coregister", False),
-            coregister_id=order.get("coregister_id", ""),
+            coregister=order_dict.get("coregister", False),
+            coregister_id=order_dict.get("coregister_id", ""),
             product_bundle="analytic_udm2",
-            continue_existing=order.get("continue_existing", False),
-            month_filter=order.get("month_filter", None),
+            continue_existing=order_dict.get("continue_existing", False),
+            month_filter=order_dict.get("month_filter", None),
         )
-        if "tools" in order:
+        if "tools" in order_dict:
             task_kwargs["tools"] = (
-                set(order["tools"])
-                if not isinstance(order["tools"], set)
-                else order["tools"]
+                set(order_dict["tools"])
+                if not isinstance(order_dict["tools"], set)
+                else order_dict["tools"]
             )
 
         task = download_order_by_name(**task_kwargs)
@@ -632,11 +647,8 @@ async def download_order_by_name(
     Returns:
         None
     """
-
-    if order_states is None or order_states == []:
-        order_states = ["success", "running"]
-    elif isinstance(order_states, str):
-        order_states = [order_states]
+    # Set which order states to look for. Defaults to ['success', 'running'] if not specified.
+    order_states = normalize_order_states(order_states)
 
     if overwrite and continue_existing:
         raise ValueError(
@@ -693,8 +705,6 @@ async def download_order_by_name(
             )
 
 
-
-
 def filter_ids_by_date(
     items: List[dict], month_filter: List[str]
 ) -> Dict[str, List[str]]:
@@ -716,7 +726,7 @@ def filter_ids_by_date(
               Example: {"2023-06-27": ["1234a", "33445g"], "2023-06-28": ["2345c", "4f465c"]}
     """
     if not month_filter:
-        month_filter= [str(i).zfill(2) for i in range(1,13)]
+        month_filter = [str(i).zfill(2) for i in range(1, 13)]
 
     ids_by_date = get_ids_by_date(items)
 
@@ -758,7 +768,7 @@ def get_ids(items, month_filter: list = None) -> List[str]:
     if items == [] or items is None:
         return []
     # get a dict of each date in format 'YYYY-MM-DD' where each entry is the list of IDS that match this date
-    ids_by_date = filter_ids_by_date(items,  month_filter)
+    ids_by_date = filter_ids_by_date(items, month_filter)
     # Get the IDs assoicated with each date from the dictionary. This is a nested list ex. [[1,2],[3,4]]
     ids = [ids_by_date.values()]
     # flattens the nested list into a single list ex. [[1,2],[3,4]] -> [1,2,3,4]
@@ -768,7 +778,6 @@ def get_ids(items, month_filter: list = None) -> List[str]:
     ids = [item for sublist in ids for item in sublist]
 
     return ids
-
 
 
 def get_image_id_with_lowest_cloud_cover(items):
@@ -909,7 +918,6 @@ def get_ids_by_date(items):
     return ids_by_date
 
 
-
 async def create_and_download(client, request, download_path: str):
     """
     Creates an order using the provided client and request, and then downloads the order to the specified download path.
@@ -1010,6 +1018,7 @@ async def get_order_ids_by_name(
 
     return list(matching_orders)
 
+
 def validate_order_downloaded(download_path: str) -> bool:
     """
     Validates that the order has been downloaded successfully.
@@ -1080,7 +1089,6 @@ def get_tools(
     clip: bool = True,
     toar: bool = True,
     coregister: bool = False,
-    coregister: bool = False,
     id_to_coregister: str = "",
 ):
     """
@@ -1116,91 +1124,6 @@ def get_tools(
     return tools
 
 
-async def get_item_list(roi, start_date, end_date,  **kwargs):
-    """
-    Get a list of item IDs based on the provided parameters.
-
-    KwArgs:
-        cloud_cover (float): The maximum cloud cover percentage. (0-1) Defaults to 0.99.
-        month_filter (list): A list of months to filter the acquired dates by.
-        month_filter (list): A list of months to filter the acquired dates by.
-            Pass a list of months in the format ['01','02','03'] to filter the acquired dates by the months in the list.
-            Defaults to an empty list which means all months are included.
-
-
-    """
-    defaults = {
-        "cloud_cover": 0.99,
-    }
-    defaults.update(kwargs)
-
-    async with planet.Session() as sess:
-        cl = sess.client("data")
-
-        combined_filter = create_combined_filter(roi, start_date, end_date,  **defaults)
-
-        # Create the order request
-
-
-        request = await cl.create_search(
-            name="temp_search", search_filter=combined_filter, item_types=["PSScene"]
-        )
-        # stats = await cl.get_stats(item_types=["PSScene"], interval="day",search_filter=combined_filter)
-        # print(stats)
-        # 100,000 is the highest limit for the search request that has been tested
-        # create a search request that returns 100 items per page see this for an example https://github.com/planetlabs/notebooks/blob/master/jupyter-notebooks/Data-API/planet_python_client_introduction.ipynb
-        items = cl.run_search(search_id=request["id"],  limit=10000)
-        item_list = [i async for i in items]
-
-        if item_list == []:
-            print(
-                f"No items found that matched the search criteria were found.\n\
-            print(
-                f"No items found that matched the search criteria were found.\n\
-                  start_date: {start_date}\n\
-                  end_date: {end_date}\n\
-                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
-            )
-            raise ValueError(
-                f"No items found that matched the search criteria were found.\n\
-                  start_date: {start_date}\n\
-                  end_date: {end_date}\n\
-                  cloud_cover: {kwargs.get('cloud_cover', 0.99)}"
-            )
-
-        # print(f"items: {item_list}")
-        # get the ids of the items group by acquired date, then flattened into a 1D list.
-        if "month_filter" in kwargs:
-            ids = get_ids(item_list, kwargs["month_filter"])
-        else:
-            ids = get_ids(item_list)
-        return ids
-
-#@todo this function is not used anywhere, should it be removed?
-async def order_by_ids(
-    roi,
-    ids,
-    order_name,
-    download_path: str,
-    clip: bool = True,
-    toar: bool = True,
-    coregister: bool = False,
-):
-
-    async with planet.Session() as sess:
-        # create a client for the orders API
-        cl = sess.client("orders")
-
-        # get the tools to be applied to the order
-        tools = get_tools(roi, clip, toar, coregister, ids[0])
-        # analytic_udm2
-        # By default use the clip and TOAR tools to clip the image to the roi and convert the images from radience to TOAR reflectance
-        request = create_order_request(order_name,ids,tools=tools,product_bundle="ortho_analytic_4b",item_type="PSScene")
-
-        # Create and download the order
-        await create_and_download(cl, request, download_path)
-
-
 async def process_order_batch(
     cl,
     ids_batch,
@@ -1225,7 +1148,8 @@ async def process_order_batch(
     """
     order_name = f"{order_name_base}_{len(ids_batch)}"
 
-    request = create_order_request(order_name=order_name,
+    request = create_order_request(
+        order_name=order_name,
         ids=ids_batch,
         tools=tools,
         product_bundle=product_bundle,
@@ -1421,7 +1345,7 @@ async def make_order_and_download(
 
         # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
         print(f"Number of items to download before filtering by area: {len(item_list)}")
-        item_list = filter_items_by_area(roi, item_list,  min_area_percentage)
+        item_list = filter_items_by_area(roi, item_list, min_area_percentage)
 
         print(f"Number of items to download after filtering by area: {len(item_list)}")
         # gets the IDs of the items to be downloaded based on the acquired date (not order by date though)
