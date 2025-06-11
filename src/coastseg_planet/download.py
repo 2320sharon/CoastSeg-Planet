@@ -86,10 +86,31 @@ async def query_planet_items(
     return item_list
 
 
-async def await_order(
-    client,
-    request,
-):
+async def await_existing_order(client, order, max_attempts=200):
+    """
+    Waits for an existing order to reach a either a success, failed or cancelled state with exponential backoff.
+
+    Args:
+        client (planet.Client): The Planet client used to create the order and download the data.
+        order (dict): the order object returned by: order = await client.get_order(order_id)
+        max_attempts (int, optional): Maximum number of attempts to wait for the order to be created. Defaults to 200.
+
+    Returns:
+        dict: The order details
+    """
+    # First create the order and wait for it to be created
+    with planet.reporting.StateBar(state="creating") as reporter:
+        reporter.update(state="created", order_id=order["id"])
+        await wait_with_exponential_backoff(
+            client,
+            order["id"],
+            callback=reporter.update_state,
+            max_attempts=max_attempts,
+        )
+    return order
+
+
+async def await_order(client, request, state=None):
     """
     Creates an order using the provided client and request.
     The order is created and the state is updated using exponential backoff.
@@ -108,7 +129,7 @@ async def await_order(
         order = await client.create_order(request)
         reporter.update(state="created", order_id=order["id"])
         await wait_with_exponential_backoff(
-            client, order["id"], callback=reporter.update_state
+            client, order["id"], callback=reporter.update_state, state=state
         )
     return order
 
@@ -335,42 +356,72 @@ async def download_multiple_orders_in_parallel(order_list: List[Order]):
 
 
 def filter_items_by_area(
-    roi_gdf: gpd.GeoDataFrame, items: List[dict], min_area_percent: float = 0.5
+    roi_gdf: gpd.GeoDataFrame,
+    items: List[dict],
+    min_roi_coverage: float = 0.5,
+    min_tile_coverage: float = 0.0,
 ) -> List[dict]:
     """
-    Filters a list of items based on their area within a region of interest (ROI). Any items whose area is lower than the minimum area percentage of the ROI will be removed.
+    Filters items based on how much of the ROI they cover. Keeps only items that
+    cover at least `min_roi_coverage` of the total ROI area.
 
     Args:
         roi_gdf (gpd.GeoDataFrame): A GeoDataFrame representing the region of interest.
-        items (List[dict]): A list of dictionaries representing the items.
-        min_area_percent (float, optional): The minimum area percentage of the ROI that an item must have to be included. Defaults to 0.5.
+        items (List[dict]): Items with geometries (in GeoJSON format).
+        min_roi_coverage (float): Minimum fraction of ROI the tile must cover.(0–1). Defaults to 0.5.
+        min_tile_coverage (float): Minimum fraction of tile that must be covered by the ROI. (0–1). Defaults to 0.0.
+
+
     Returns:
         List[dict]: A filtered list of items that meet the area criteria.
     """
-    # get the ids of each of the items
-    ids = [item["id"] for item in items]
-    # make a GeoDataFrame from the items
-    polygons = [geometry.Polygon(item["geometry"]["coordinates"][0]) for item in items]
-    items_gdf = gpd.GeoDataFrame(geometry=polygons, crs="EPSG:4326")
-    items_gdf["id"] = ids
-    # load the ROI and estimate the UTM CRS
+    if roi_gdf.empty:
+        print("Empty ROI GeoDataFrame.")
+        return []
+
+    # Estimate UTM CRS for accurate area measurements
     utm_crs = roi_gdf.estimate_utm_crs()
-    # clip the polygons of the images to download to the ROI
-    items_gdf = items_gdf.to_crs(utm_crs)
     roi_gdf = roi_gdf.to_crs(utm_crs)
-    clipped_gdf = gpd.clip(items_gdf, roi_gdf)
+    roi_union = roi_gdf.unary_union
+    roi_area = roi_union.area
 
-    # calculate the area of the clipped images & ROI
-    clipped_gdf["area"] = clipped_gdf["geometry"].area
-    roi_gdf["area"] = roi_gdf["geometry"].area
-    roi_area = roi_gdf["area"].sum()
+    # Convert item geometries to GeoDataFrame
+    ids = [item["id"] for item in items]
+    polygons = [geometry.Polygon(item["geometry"]["coordinates"][0]) for item in items]
+    items_gdf = gpd.GeoDataFrame(
+        {"id": ids, "geometry": polygons}, crs="EPSG:4326"
+    ).to_crs(utm_crs)
 
-    # drop any rows in clipped_gdf whose ROI is less than 50% of the total ROI
-    clipped_gdf = clipped_gdf[clipped_gdf["area"] > min_area_percent * roi_area]
-    print(f"Filtered out {len(items_gdf) - len(clipped_gdf)} items")
-    # filter the items_list to only include the items that are in the clipped_gdf
-    item_list = [item for item in items if item["id"] in clipped_gdf["id"].values]
-    return item_list
+    # Compute original tile area before clipping
+    items_gdf["tile_area"] = items_gdf.geometry.area
+
+    # Clip tiles to ROI
+    clipped_gdf = gpd.clip(items_gdf, roi_gdf).reset_index(drop=True)
+
+    # Area of the intersection
+    clipped_gdf["intersection_area"] = clipped_gdf.geometry.area
+
+    # Calculate coverage ratios
+    clipped_gdf["roi_coverage_ratio"] = clipped_gdf["intersection_area"] / roi_area
+    clipped_gdf["tile_coverage_ratio"] = (
+        clipped_gdf["intersection_area"] / clipped_gdf["tile_area"]
+    )
+    print(f"clipped_gdf:\n{clipped_gdf}")
+
+    # Filter based on thresholds
+    filtered_gdf = clipped_gdf[
+        (clipped_gdf["roi_coverage_ratio"] >= min_roi_coverage)
+        & (clipped_gdf["tile_coverage_ratio"] >= min_tile_coverage)
+    ]
+
+    print(
+        f"Filtered out {len(items) - len(filtered_gdf)} items based on coverage thresholds."
+    )
+
+    # Return filtered items
+    filtered_ids = set(filtered_gdf["id"])
+    filtered_items = [item for item in items if item["id"] in filtered_ids]
+    return filtered_items
 
 
 def move_contents(main_folder, psscene_path, remove_path=False):
@@ -554,6 +605,9 @@ async def wait_with_exponential_backoff(
     Returns:
         str: The state of the order on the last poll.
     """
+    # Add logic  to prevent infinite loops
+    if max_attempts <= 0:
+        max_attempts = 1
     attempt = 0
     delay = initial_delay
 
@@ -599,6 +653,32 @@ class FixPointNormalize(matplotlib.colors.Normalize):
     def __call__(self, value, clip=None):
         x, y = [self.vmin, self.sealevel, self.vmax], [0, self.col_val, 1]
         return np.ma.masked_array(np.interp(value, x, y))
+
+
+def validate_dates(start_date: str, end_date: str):
+    """
+    Validates that start_date and end_date are provided and that end_date is not before start_date.
+
+    Args:
+        start_date (str): The start date in 'YYYY-MM-DD' format.
+        end_date (str): The end date in 'YYYY-MM-DD' format.
+
+    Raises:
+        ValueError: If either date is missing or if end_date is before start_date.
+    """
+    if not start_date or not end_date:
+        raise ValueError(
+            "start_date and end_date must be specified to create a new order"
+        )
+
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError("start_date and end_date must be in 'YYYY-MM-DD' format")
+
+    if end_dt < start_dt:
+        raise ValueError("end_date must be the same as or after start_date")
 
 
 async def download_order_by_name(
@@ -657,39 +737,23 @@ async def download_order_by_name(
 
     async with planet.Session() as sess:
         cl = sess.client("orders")
+        print("Checking if the order already exists. This may take a few seconds....")
 
         # check if an existing order with the same name exists
-        order_ids = await get_order_ids_by_name(cl, order_name, states=order_states)
-        print(f"Matching Order ids: {order_ids}")
-        if order_ids != [] and not overwrite:
-            print(f"Order with name {order_name} already exists. Downloading...")
+        existing_order_ids = await get_order_ids_by_name(
+            cl, order_name, states=order_states
+        )
+        print(f"Matching Order ids: {existing_order_ids}")
+        if existing_order_ids and not overwrite:
+            print(f"Order with name {order_name} already exists. Beginning download.")
             await download_existing_orders(
-                cl, order_ids, output_path, continue_existing=continue_existing
+                cl, existing_order_ids, output_path, continue_existing=continue_existing
             )
         else:
-            action = "Overwriting" if overwrite else "Creating"
-            print(f"{action} order with name {order_name}")
-            if end_date == "" or start_date == "":
-                raise ValueError(
-                    "start_date and end_date must be specified to create a new order"
-                )
-            # if ROI is a geodataframe check if its empty or doesn't have a CRS
-            if isinstance(roi, gpd.GeoDataFrame):
-                if roi.empty:
-                    raise ValueError(
-                        "GeoDataFrame roi must not be empty to create a new order"
-                    )
-                if not roi.crs:
-                    raise ValueError("ROI must have a CRS to create a new order")
-            if isinstance(roi, dict):
-                if not roi:
-                    raise ValueError("ROI must not be empty to create a new order")
-                roi = gpd.GeoDataFrame.from_features(roi)
-                # assume the ROI is in epsg 4326
-                roi.set_crs("EPSG:4326", inplace=True)
-                print(
-                    f"Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS"
-                )
+            # download a new order
+            print(f"{'Overwriting' if overwrite else 'Creating'} order '{order_name}'")
+            validate_dates(start_date, end_date)
+            roi = validate_and_prepare_roi(roi)
 
             await make_order_and_download(
                 roi,
@@ -852,10 +916,7 @@ def create_combined_filter(
     )
 
     print(
-        f"Getting data from {time1} to {time2} with cloud cover less than {cloud_cover}"
-    )
-    print(
-        f"Getting data from {time1} to {time2} with cloud cover less than {cloud_cover}"
+        f"Getting data from {time1} to {time2} with cloud cover less than {cloud_cover * 100:.0f}%"
     )
 
     cloud_cover_filter = planet.data_filter.range_filter(
@@ -934,13 +995,7 @@ async def create_and_download(client, request, download_path: str):
     Returns:
         dict: The order details.
     """
-    # First create the order and wait for it to be created
-    with planet.reporting.StateBar(state="creating") as reporter:
-        order = await client.create_order(request)
-        reporter.update(state="created", order_id=order["id"])
-        await wait_with_exponential_backoff(
-            client, order["id"], callback=reporter.update_state
-        )
+    order = await await_order(client, request)
     # Download the order to the specified directory
     await client.download_order(order["id"], download_path, progress_bar=True)
     return order
@@ -973,43 +1028,25 @@ async def get_order_ids_by_name(
         states = ["success"]
 
     orders_list = await planet.collect(client.list_orders())
-    matching_orders = set()
-
-    if not orders_list:
-        print("No orders found")
-        return list(matching_orders)
-
     print(f"Found {len(orders_list)} orders")
+    if not orders_list:
+        return []
 
-    for order in orders_list:
-        if "name" not in order or "state" not in order:
-            continue
-
-        order_name_val = order["name"]
-        order_state = order["state"]
-
-        # 1. Exact match
-        if order_name_val == order_name and order_state in states:
-            matching_orders.add(order["id"])
-            continue
-
-        # 2. Regex match (e.g., name_batchXYZ)
-        pattern = re.compile(f"^{order_name}(_batch.*)?$")
-        if pattern.match(order_name_val) and order_state in states:
-            matching_orders.add(order["id"])
-            continue
-
-        # 3. Substring match (optional)
-        if contains_name and order_name in order_name_val and order_state in states:
-            matching_orders.add(order["id"])
-    for order in orders_list:
-        if "name" not in order or "state" not in order:
-            continue
-        if pattern.match(order["name"]) and order["state"] in states:
-            matching_orders.append(order["id"])
-
-    # remove duplicate order ids
-    matching_orders = list(set(matching_orders))
+    pattern = re.compile(f"^{re.escape(order_name)}(_batch.*)?$")
+    matching_orders = {
+        order["id"]
+        for order in orders_list
+        if "name" in order
+        and "state" in order
+        and order["state"] in states
+        and (
+            order["name"] == order_name  # exact match
+            or pattern.match(order["name"])  # regex match
+            or (
+                contains_name and order_name in order["name"]
+            )  # substring match if contains_name is True
+        )
+    }
 
     if not matching_orders:
         print(
@@ -1199,20 +1236,7 @@ async def process_orders_in_batches(
     # Create tasks for each batch
     tasks = []
     for i, ids_batch in enumerate(id_batches):
-        print(
-            f"processing batch #{i + 1} of size {len(ids_batch)} of {len(id_batches)}"
-        )
-        task = process_order_batch(
-            cl,
-            ids_batch,
-            tools,
-            f"{order_name_base}_batch_{i + 1}",
-            download_path,
-            product_bundle,
-        )
-        print(
-            f"processing batch #{i + 1} of size {len(ids_batch)} of {len(id_batches)}"
-        )
+        # no need for await because we are just gathering the coroutines
         task = process_order_batch(
             cl,
             ids_batch,
@@ -1222,6 +1246,9 @@ async def process_orders_in_batches(
             product_bundle,
         )
         tasks.append(task)
+        print(
+            f"processing batch #{i + 1} of size {len(ids_batch)} of {len(id_batches)}"
+        )
 
     # Download orders in parallel, no more than 5 at a time
     semaphore = asyncio.Semaphore(5)
@@ -1262,8 +1289,6 @@ def build_tools_list(tools, roi_dict=None, id_to_coregister: str = ""):
             tools_list.append(tool_map[tool_name]())
         else:
             print(f"Warning: Unknown tool '{raw_tool}' skipped.")
-
-    print(f"Using the following tools list: {tools_list}")
     return tools_list
 
 
@@ -1289,6 +1314,38 @@ def get_id_to_coregister(ids, items, coregister: bool, user_coregister_id: str =
             f"Coregister ID {id_to_coregister} not found in the list of IDs to download"
         )
     return id_to_coregister
+
+
+def validate_and_prepare_roi(roi):
+    """
+    Validates and prepares the ROI for use as a GeoDataFrame with a CRS.
+    Accepts either a GeoDataFrame or a GeoJSON-like dict.
+
+    Args:
+        roi (gpd.GeoDataFrame or dict): The region of interest.
+
+    Returns:
+        gpd.GeoDataFrame: A valid GeoDataFrame with a CRS.
+
+    Raises:
+        ValueError: If the ROI is empty or missing a CRS.
+    """
+    if isinstance(roi, gpd.GeoDataFrame):
+        if roi.empty:
+            raise ValueError("GeoDataFrame roi must not be empty to create a new order")
+        if not roi.crs:
+            raise ValueError("ROI must have a CRS to create a new order")
+        return roi
+    if isinstance(roi, dict):
+        if not roi:
+            raise ValueError("ROI must not be empty to create a new order")
+        roi_gdf = gpd.GeoDataFrame.from_features(roi)
+        roi_gdf.set_crs("EPSG:4326", inplace=True)
+        print(
+            "Setting the CRS of the ROI to EPSG:4326. If your ROI is not in this CRS please pass a geodataframe with the correct CRS"
+        )
+        return roi_gdf
+    raise ValueError("ROI must be a GeoDataFrame or a GeoJSON-like dict")
 
 
 async def make_order_and_download(
@@ -1331,10 +1388,8 @@ async def make_order_and_download(
 
     # Ensure cloud_cover is in kwargs with a default value of 0.99
     kwargs.setdefault("cloud_cover", 0.99)
-    kwargs.setdefault("cloud_cover", 0.99)
 
     async with planet.Session() as sess:
-
         # convert the ROI to a dictionary so it can be used with the Planet API
         roi_dict = json.loads(roi.to_json())
 
@@ -1368,6 +1423,7 @@ async def make_order_and_download(
         tools_list = build_tools_list(
             tools, roi_dict=roi_dict, id_to_coregister=id_to_coregister
         )
+        print(f"Using tools : {tools_list}")
 
         # print(f"id_to_coregister: {id_to_coregister} Apply Coregistration: {coregister}")
         # Process orders in batches
@@ -1387,7 +1443,7 @@ async def get_existing_order(
     client, order_id: str, download_path="downloads", continue_existing=False
 ) -> Optional[dict]:
     """
-    Downloads the contents of an order from the client.
+    Downloads an existing order by its ID from the Planet API and saves it to the specified download path.
 
     Args:
         client: The client object used to interact with the API.
@@ -1398,27 +1454,47 @@ async def get_existing_order(
         Optional[dict]: The order if successful, None otherwise.
     """
     order = await client.get_order(order_id)
-    print(f"The order's state is {order['state']}")
-    if order["state"] == "success":
+
+    order_state = order.get("state")
+    print(f"The order's state is '{order_state}'.")
+
+    if order_state == "success":
         if continue_existing or not validate_order_downloaded(download_path):
-            print(
-                f"The order is ready to download. Downloading the order to {download_path}"
-            )
+            print(f"Order is ready to download! Downloading to {download_path}")
             await client.download_order(order["id"], download_path, progress_bar=True)
         else:
             print(f"Order already downloaded to {download_path}")
             return order
-    elif order["state"] == "running":
-        print(f"Order is running and downloading to {download_path}")
-        client.download_order(order["id"], download_path, progress_bar=True)
+    elif order_state == "running":
+        print(
+            "Order is running and not yet ready to download. This may take a few minutes..."
+        )
+        # Await for the existing order to be fulfilled before downloading (aka in state of 'success')
+        await await_existing_order(
+            client,
+            order,
+        )
+        print(f"Order is ready to download! Downloading to {download_path}")
+        # @todo make check if the order failed and raise an error if it did
+        await client.download_order(order["id"], download_path, progress_bar=True)
+    elif order_state == "failed":
+        print(
+            f"Order {order_id} has failed. Please go to the Planet API dashboard to check the order status to determine the cause of the failure."
+        )
+        return None
+    elif order_state == "cancelled":
+        print(
+            f"Order {order_id} has been cancelled. Please go to the Planet API dashboard to check the order status."
+        )
+        return None
     else:
         print("Order is not yet fulfilled.")
         return None
 
 
 async def download_existing_orders(
-    client,
-    order_ids,
+    client: "Planet Orders Client",
+    order_ids: list[str],
     download_path="downloads",
     continue_existing=False,
     max_concurrent_downloads=5,
@@ -1427,13 +1503,15 @@ async def download_existing_orders(
     Downloads the contents of multiple orders from the client in parallel with a limit on concurrent downloads.
 
     Args:
-        client: The client object used to interact with the API.
+        client: A planet orders client used to interact with the API.
         order_ids: The list of order IDs to download.
         download_path: The path where the downloaded files will be saved. Defaults to 'downloads'.
         continue_existing: Flag indicating whether to continue downloading existing orders. Defaults to False.
         max_concurrent_downloads: The maximum number of concurrent downloads. Defaults to 5.
     Returns:
         List[Optional[dict]]: A list of orders if successful, None otherwise.
+            Any orders that were not successfully downloaded will be None.
+            Example: [order1, order2, None, order4]
     """
     semaphore = asyncio.Semaphore(max_concurrent_downloads)
 
