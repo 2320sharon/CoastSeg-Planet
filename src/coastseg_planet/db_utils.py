@@ -1,9 +1,10 @@
 import os
 import re
-import asyncio
 from typing import List, Dict, Union, Set, Optional, Callable
 import json
 import xml.etree.ElementTree as ET
+
+from shapely.geometry import Polygon, mapping
 import rasterio
 from rasterio.warp import transform_geom
 from coastseg_planet.db.base import BaseDuckDB
@@ -12,7 +13,6 @@ from coastseg_planet.db.tile_repository import TileRepository
 from coastseg_planet.db.order_repository import OrderRepository
 from coastseg_planet.processor import TileProcessor
 from coastseg_planet.config import DATABASE_PATH, TILE_STATUSES
-import re
 
 # Define extractor functions
 extractors = {
@@ -443,29 +443,26 @@ async def process_roi_mode(
     if not shared_geometry:
         raise ValueError("No geometry found for ROI.")
 
-    # Insert one ROI into ROIs table
-    await processor.process(
-        {
-            "action": "insert_roi",
-            "roi_id": roi_name,
-            "tile_id": "",
-            "capture_time": "",
-            "geometry": shared_geometry,
-            "order_name": order_name,
-        }
-    )
+    roi_polygon = Polygon(shared_geometry["coordinates"][0])
 
     # Each ROI intersects with multiple tiles so insert each tile id that the ROI intersects with into the DB
     for tile_id, details in id_dict.items():
+
+        metadata_file = details.get("metadata")
+        fallback_files = details.get("files", [])
+        tile_geometry = extract_geometry(metadata_file, fallback_files, extractors)
+        tile_polygon = Polygon(tile_geometry["coordinates"][0])
+        intersection_region = tile_polygon.intersection(roi_polygon)
+
         # for each tile make a new entry in the roi_tiles table
         await processor.process(
             {
-                "action": "insert_roi_tile",
+                "action": "insert_roi",
                 "roi_id": roi_name,
                 "tile_id": tile_id,
                 "capture_time": extract_unique_datetime_ids(tile_id),
-                "intersection": None,
-                "fallback_geom": shared_geometry,
+                "intersection": mapping(intersection_region),
+                "geometry": shared_geometry,
             }
         )
 
@@ -483,32 +480,11 @@ async def process_roi_mode(
                 }
             )
 
-    # Associate all files with the ROI ID
-    for tile_id, details in id_dict.items():
-        # for each tile make a new entry in the roi_tiles table
-        await processor.process(
-            {
-                "action": "insert_roi_tile",
-                "roi_id": roi_name,
-                "tile_id": tile_id,
-                "capture_time": extract_unique_datetime_ids(tile_id),
-                "intersection": shared_geometry,
-                "fallback_geom": shared_geometry,
-            }
-        )
-        for filepath in details["files"]:
-            filename = os.path.basename(filepath)
-            await processor.process(
-                {
-                    "action": "update_metadata_roi",
-                    "roi_id": roi_name,
-                    "tile_id": "_".join(filename.split("_")[:4]),
-                    "order_id": "",
-                    "filepath": filepath,
-                    "status": TILE_STATUSES["DOWNLOADED"],
-                }
-            )
-
+        # @todo update code to copy what tiles does and update the intersection for the ROI after the metadata file has been read
+        # Recall that intersection is the ROI's intersection with the tile geom
+        # tile_geom = get_geom(id_dict[tile_id])
+        # Clip ROI to tile
+        # set this as the new geom
     print(f"✅ Inserted ROI '{roi_name}' with shared geometry and associated files.")
 
 
@@ -540,6 +516,39 @@ def extract_id(filename):
 
 
 def existing_files_dictionary(directory):
+    """
+    Scans a directory recursively and builds a dictionary mapping unique file IDs to their associated files and metadata.
+    Args:
+        directory (str): The root directory to search for files.
+    Returns:
+        dict: A dictionary where each key is a file ID (as extracted by `extract_id(file)`), and each value is a dictionary with:
+            - "metadata": The full path to the metadata file (ending with "_metadata.json") for that ID, or None if not found.
+            - "files": A list of full paths to all files associated with that ID.
+    Notes:
+        - Files without a valid ID (as determined by `extract_id`) are skipped.
+        - The function assumes the existence of an `extract_id` function to extract IDs from filenames.
+
+    Example:
+        >>> directory = "/path/to/your/directory"
+        >>> id_dict = existing_files_dictionary(directory)
+        >>> print(id_dict)
+    {
+        "20230101_120000_01": {
+            "metadata": "/path/to/your/directory/20230101_120000_01_metadata.json",
+            "files": [
+                "/path/to/your/directory/20230101_120000_01_file1.tif",
+                "/path/to/your/directory/20230101_120000_01_file2.tif"
+            ]
+        },
+        "20230102_130000_02": {
+            "metadata": "/path/to/your/directory/20230102_130000_02_metadata.json",
+            "files": [
+                "/path/to/your/directory/20230102_130000_02_file1.tif"
+            ]
+        }
+    }
+
+    """
     id_dict = {}
 
     # Walk through the directory tree recursively

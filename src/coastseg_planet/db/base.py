@@ -15,11 +15,14 @@ def parse_capture_time(id_str: str) -> str:
 
 # Centralized SQL for table definitions
 TABLE_DEFINITIONS = {
-    "rois": """
-        CREATE TABLE IF NOT EXISTS rois (
-            roi_id TEXT PRIMARY KEY,
+    "roi_data": """
+        CREATE TABLE IF NOT EXISTS roi_data (
+            roi_id TEXT,
+            tile_id TEXT,
+            capture_time TIMESTAMP,
             geometry GEOMETRY DEFAULT NULL,
-            order_name TEXT DEFAULT NULL,
+            intersection GEOMETRY DEFAULT NULL,
+            PRIMARY KEY (roi_id, tile_id)
         );
     """,
     "roi_files": """
@@ -30,17 +33,7 @@ TABLE_DEFINITIONS = {
             filename TEXT,
             order_id TEXT,
             status TEXT,
-            FOREIGN KEY (roi_id) REFERENCES rois(roi_id)
-        );
-    """,
-    "roi_tiles": """
-        CREATE TABLE IF NOT EXISTS roi_tiles (
-            roi_id TEXT,
-            tile_id TEXT,
-            capture_time TIMESTAMP,
-            intersection GEOMETRY DEFAULT NULL,
-            PRIMARY KEY (roi_id, tile_id),
-            FOREIGN KEY (roi_id) REFERENCES rois(roi_id)
+            FOREIGN KEY (roi_id, tile_id) REFERENCES roi_data(roi_id, tile_id)
         );
     """,
     "orders": """
@@ -74,8 +67,10 @@ TABLE_DEFINITIONS = {
 
 # Indexes for performance
 INDEX_DEFINITIONS = [
-    "CREATE INDEX IF NOT EXISTS idx_tile_id ON roi_files(tile_id);",
-    "CREATE INDEX IF NOT EXISTS idx_tile_file_tile_id ON tile_files(tile_id);",
+    "CREATE INDEX IF NOT EXISTS idx_roi_files_tile_id ON roi_files(tile_id);",
+    "CREATE INDEX IF NOT EXISTS idx_tile_files_tile_id ON tile_files(tile_id);",
+    "CREATE INDEX IF NOT EXISTS idx_roi_data_tile_id ON roi_data(tile_id);",
+    "CREATE INDEX IF NOT EXISTS idx_roi_data_roi_id ON roi_data(roi_id);",
 ]
 
 
