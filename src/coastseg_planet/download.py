@@ -21,6 +21,24 @@ import planet
 from coastseg_planet.orders import Order
 
 
+def validate_item_exists(item: Dict[str, Any], progress_bar: tqdm_asyncio) -> bool:
+    """
+    Checks if the specified file already exists in the given directory.
+
+    Args:
+        item (Dict[str, Any]): A dictionary containing at least 'directory' (a Path or str) and 'filename' (str) keys.
+        progress_bar (tqdm_asyncio): A tqdm_asyncio progress bar instance to update if the file exists.
+
+    Returns:
+        bool: True if the file exists (and progress bar is updated), False otherwise.
+    """
+    # if the item already exists don't download it again
+    if os.path.exists(item["directory"] / item["filename"]):
+        progress_bar.update(1)
+        return True
+    return False
+
+
 def normalize_order_states(order_states):
     """
     Normalize the order_states input to always be a non-empty list of states.
@@ -93,6 +111,19 @@ async def await_existing_order(client, order, max_attempts=200):
     Args:
         client (planet.Client): The Planet client used to create the order and download the data.
         order (dict): the order object returned by: order = await client.get_order(order_id)
+        Example order object:
+        {
+            '_links': {'_self': 'https://api.planet.com/compute/ops/orders/v2/00d62c36-d1d0-4201-bf49-80e5ded9ec90'},
+            'created_on': '2025-06-13T23:26:45.823459Z',
+            'error_hints': [], 'id': '00d62c36-d1d0-4201-bf49-80e5ded9ec90',
+            'last_message': 'Waiting for delivery to complete (Running:2 Succeeded:0 Failed:0)',
+            'last_modified': '2025-06-13T23:30:12.16649Z',
+            'name': 'SB_Order_2020-07-16_to_2020-07-18_batch_1',
+            'products':
+                [{'item_ids': ['20200716_175636_60_2271', '20200717_183126_34_1069'],
+                'item_type': 'PSScene', 'product_bundle': 'analytic_udm2'}],
+            'state': 'running'
+            }
         max_attempts (int, optional): Maximum number of attempts to wait for the order to be created. Defaults to 200.
 
     Returns:
@@ -392,6 +423,9 @@ def filter_items_by_area(
         {"id": ids, "geometry": polygons}, crs="EPSG:4326"
     ).to_crs(utm_crs)
 
+    # save items_gdf to geojson for debugging
+    # items_gdf.to_file("items.geojson", driver="GeoJSON")
+
     # Compute original tile area before clipping
     items_gdf["tile_area"] = items_gdf.geometry.area
 
@@ -406,7 +440,15 @@ def filter_items_by_area(
     clipped_gdf["tile_coverage_ratio"] = (
         clipped_gdf["intersection_area"] / clipped_gdf["tile_area"]
     )
-    print(f"clipped_gdf:\n{clipped_gdf}")
+    print(f"Number of clipped items: {len(clipped_gdf)}")
+
+    # Debugging output
+    # print(f"clipped_gdf:\n{clipped_gdf}")
+    # print the roi covererage ratios
+    # print(f"ROI coverage ratios:\n{clipped_gdf['roi_coverage_ratio']}")
+
+    # Debugging only: Save to geojson for testing purposes
+    # clipped_gdf.to_file("clipped_items.geojson", driver="GeoJSON")
 
     # Filter based on thresholds
     filtered_gdf = clipped_gdf[
@@ -1474,8 +1516,16 @@ async def get_existing_order(
             client,
             order,
         )
+        # Re-fetch the order after waiting
+        order = await client.get_order(order_id)
+        order_state = order.get("state")
+        if order_state != "success":
+            print(
+                f"Order {order_id} is still not fulfilled. Current state: {order_state}. Please check the order status on the Planet API dashboard."
+            )
+            return None
+
         print(f"Order is ready to download! Downloading to {download_path}")
-        # @todo make check if the order failed and raise an error if it did
         await client.download_order(order["id"], download_path, progress_bar=True)
     elif order_state == "failed":
         print(
