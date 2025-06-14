@@ -4,13 +4,65 @@ import glob
 import json
 import shutil
 import datetime
+import configparser
 from scipy.ndimage import zoom
 import geopandas as gpd
 import pandas as pd
+from planet import Auth
 import numpy as np
-from  coastseg_planet.processing import (get_tiffs_with_bad_area
-)
+from coastseg_planet.processing import get_tiffs_with_bad_area
 from json import JSONEncoder
+
+
+def read_config(config_path: str = None, api_key_override: str = None):
+    """
+    Main function to read config and set up the API key.
+
+    Args:
+        config_path (str): Optional path to a config.ini file.
+        api_key_override (str): Optional API key provided directly.
+
+    Returns:
+        configparser.ConfigParser: Parsed config object.
+    """
+    config = _read_config_from_file(config_path)
+
+    if api_key_override:
+        _set_api_key(api_key_override)
+    else:
+        _set_api_key_from_config(config)
+
+    return config
+
+
+def _read_config_from_file(config_path: str = None):
+    """Reads configuration from the given path or a default fallback."""
+    config_filepath = config_path or os.path.join(os.getcwd(), "config.ini")
+    if not os.path.exists(config_filepath):
+        raise FileNotFoundError(f"Config file not found at {config_filepath}")
+
+    config = configparser.ConfigParser()
+    config.read(config_filepath)
+    return config
+
+
+def _set_api_key_from_config(config):
+    """Sets API_KEY from config to environment and validates it."""
+    api_key = config.get("DEFAULT", "API_KEY", fallback="")
+    if not api_key:
+        raise ValueError(
+            "API_KEY not found in config file. "
+            "Please enter your API key in the config file or pass it directly."
+        )
+    _set_api_key(api_key)
+
+
+def _set_api_key(api_key: str):
+    """Sets the API key in environment and initializes auth."""
+    os.environ["API_KEY"] = api_key
+    auth = Auth.from_env("API_KEY")
+    auth.store()
+
 
 def find_file_by_regex(
     search_path: str, search_pattern: str = r"^config\.json$"
@@ -82,6 +134,7 @@ def load_data_from_json(filepath: str) -> dict:
         data = json.load(fp, object_hook=DecodeDateTime)
     return data
 
+
 def save_to_json(data: dict, filepath: str) -> None:
     """
     Serializes a dictionary to a JSON file, handling special serialization for datetime and numpy ndarray objects.
@@ -119,7 +172,10 @@ def save_to_json(data: dict, filepath: str) -> None:
     with open(filepath, "w") as fp:
         json.dump(data, fp, cls=DateTimeEncoder)
 
-def get_matching_files(planet_dir, patterns=set(["*AnalyticMS_clip.tif", "*3B_AnalyticMS_toar_clip.tif"])):
+
+def get_matching_files(
+    planet_dir, patterns=set(["*AnalyticMS_clip.tif", "*3B_AnalyticMS_toar_clip.tif"])
+):
     """
     Get a list of matching files in the specified directory based on the given patterns.
 
@@ -137,7 +193,10 @@ def get_matching_files(planet_dir, patterns=set(["*AnalyticMS_clip.tif", "*3B_An
 
     return matching_files
 
-def filter_files_by_area(directory:str, threshold=0.90, roi_path="", expected_area_km=None, verbose=False):
+
+def filter_files_by_area(
+    directory: str, threshold=0.90, roi_path="", expected_area_km=None, verbose=False
+):
     """
     Filters files in a directory based on their area.
 
@@ -157,31 +216,38 @@ def filter_files_by_area(directory:str, threshold=0.90, roi_path="", expected_ar
     """
     if expected_area_km is None:
         if roi_path == "":
-            print("Please provide a path to the ROI GeoJSON file to filter the files by area.")
+            print(
+                "Please provide a path to the ROI GeoJSON file to filter the files by area."
+            )
             return
         _, sq_km_area = calculate_area_in_sq_km(roi_path)
     _, sq_km_area = calculate_area_in_sq_km(roi_path)
     tif_files = get_matching_files(directory)
     if not tif_files:
         print(f"No matching files to sort found in the directory: {directory}")
-        return 
-    bad_tiff_paths = get_tiffs_with_bad_area(tif_files, sq_km_area, threshold, use_threads=True)
+        return
+    bad_tiff_paths = get_tiffs_with_bad_area(
+        tif_files, sq_km_area, threshold, use_threads=True
+    )
     if verbose:
-        print(f"Moving {len(bad_tiff_paths)} bad tifs to a new folder called bad in the directory: {directory}")
+        print(
+            f"Moving {len(bad_tiff_paths)} bad tifs to a new folder called bad in the directory: {directory}"
+        )
     # for each bad tiff move it a new folder called bad
     bad_path = os.path.join(directory, "bad")
     # I need to move the corresponding files to the bad folder (xml, udm tif, and json)
     os.makedirs(bad_path, exist_ok=True)
     for bad_tiff in bad_tiff_paths:
         try:
-            im_name = os.path.basename(bad_tiff) 
-            file_identifier = '_'.join(im_name.split("_")[:4])
+            im_name = os.path.basename(bad_tiff)
+            file_identifier = "_".join(im_name.split("_")[:4])
             move_files(directory, bad_path, file_identifier, move=True)
         except Exception as e:
             print(f"Error moving {bad_tiff} to {bad_path}")
             print(e)
 
-def calculate_area_in_sq_km(geojson_path:str)->tuple:
+
+def calculate_area_in_sq_km(geojson_path: str) -> tuple:
     """
     Calculates the total area in square kilometers from a GeoJSON file.
 
@@ -200,18 +266,21 @@ def calculate_area_in_sq_km(geojson_path:str)->tuple:
         gdf = gdf.to_crs(gdf.estimate_utm_crs())
 
     # Calculate the area in square meters
-    gdf['area_sqm'] = gdf.geometry.area
+    gdf["area_sqm"] = gdf.geometry.area
 
     # Calculate the area in square kilometers
-    gdf['area_sqkm'] = gdf['area_sqm'] / 1e6
+    gdf["area_sqkm"] = gdf["area_sqm"] / 1e6
 
     # Sum the areas to get total area in sqm and sqkm
-    total_area_sqm = gdf['area_sqm'].sum()
-    total_area_sqkm = gdf['area_sqkm'].sum()
+    total_area_sqm = gdf["area_sqm"].sum()
+    total_area_sqkm = gdf["area_sqkm"].sum()
 
     return total_area_sqm, total_area_sqkm
 
-def get_file_path(directory:str, base_filename:str, regex:str="*udm2_clip_combined_mask.tif"):
+
+def get_file_path(
+    directory: str, base_filename: str, regex: str = "*udm2_clip_combined_mask.tif"
+):
     """
     Get the file path of the cloud mask for the planet image.
 
@@ -229,7 +298,9 @@ def get_file_path(directory:str, base_filename:str, regex:str="*udm2_clip_combin
     return None
 
 
-def move_files(source_dir: str, output_dir: str, file_identifier: str, move: bool = True) -> None:
+def move_files(
+    source_dir: str, output_dir: str, file_identifier: str, move: bool = True
+) -> None:
     """
     Move or copy files from the source directory to the output directory based on the file identifier.
 
@@ -237,7 +308,7 @@ def move_files(source_dir: str, output_dir: str, file_identifier: str, move: boo
         source_dir (str): The directory where the files are located.
         output_dir (str): The directory where the files will be moved or copied to.
         file_identifier (str): The identifier used to match the files to be moved or copied.
-        move (bool, optional): If True, the files will be moved. If False, the files will be copied. 
+        move (bool, optional): If True, the files will be moved. If False, the files will be copied.
             Defaults to True.
 
     Returns:
@@ -245,8 +316,14 @@ def move_files(source_dir: str, output_dir: str, file_identifier: str, move: boo
     """
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-    
-    for ext in ["*_metadata.json", "*_metadata_clip.xml", "*_udm*.tif", "*.tif", "*.xml"]:
+
+    for ext in [
+        "*_metadata.json",
+        "*_metadata_clip.xml",
+        "*_udm*.tif",
+        "*.tif",
+        "*.xml",
+    ]:
         pattern = os.path.join(source_dir, f"{file_identifier}{ext}")
         files = glob.glob(pattern)
         for file in files:
@@ -257,10 +334,13 @@ def move_files(source_dir: str, output_dir: str, file_identifier: str, move: boo
             else:
                 shutil.copyfile(file, output_path)
 
-def sort_images(inference_df_path:str,
-                output_folder:str,
-                move:bool=True,
-                move_additional_files:bool=True)->None:
+
+def sort_images(
+    inference_df_path: str,
+    output_folder: str,
+    move: bool = True,
+    move_additional_files: bool = True,
+) -> None:
     """
     Using model results to sort the images the model was run on into good and bad folders
     inputs:
@@ -268,8 +348,8 @@ def sort_images(inference_df_path:str,
     output_folder (str): path to the directory containing the inference images
     move (bool): if True, move the images to the good and bad folders, if False, copy the images
     """
-    bad_dir = os.path.join(output_folder, 'bad')
-    good_dir = os.path.join(output_folder, 'good')
+    bad_dir = os.path.join(output_folder, "bad")
+    good_dir = os.path.join(output_folder, "good")
     dirs = [output_folder, bad_dir, good_dir]
     for d in dirs:
         os.makedirs(d, exist_ok=True)
@@ -277,16 +357,21 @@ def sort_images(inference_df_path:str,
     print(f"inference_df_path : {inference_df_path}")
     inference_df = pd.read_csv(inference_df_path)
     for i in range(len(inference_df)):
-        input_image_path = inference_df['im_paths'].iloc[i]
-        im_name = os.path.basename(input_image_path) 
-        file_identifier = '_'.join(im_name.split("_")[:4])
-        if inference_df['im_classes'].iloc[i] == 'good':
+        input_image_path = inference_df["im_paths"].iloc[i]
+        im_name = os.path.basename(input_image_path)
+        file_identifier = "_".join(im_name.split("_")[:4])
+        if inference_df["im_classes"].iloc[i] == "good":
             output_image_path = os.path.join(good_dir, im_name)
         else:
             output_image_path = os.path.join(bad_dir, im_name)
 
         if move_additional_files:
-            move_files(os.path.dirname(input_image_path), os.path.dirname(output_image_path), file_identifier, move)
+            move_files(
+                os.path.dirname(input_image_path),
+                os.path.dirname(output_image_path),
+                file_identifier,
+                move,
+            )
 
         if not os.path.exists(input_image_path):
             continue
@@ -296,7 +381,8 @@ def sort_images(inference_df_path:str,
         else:
             shutil.copyfile(input_image_path, output_image_path)
 
-def resize_array(array:np.ndarray, new_size:tuple) -> np.ndarray:
+
+def resize_array(array: np.ndarray, new_size: tuple) -> np.ndarray:
     """
     Resize the input array to the specified new size using cubic interpolation.
 
@@ -311,5 +397,7 @@ def resize_array(array:np.ndarray, new_size:tuple) -> np.ndarray:
     # calculate the zoom factors for each dimension
     zoom_factors = [n / o for n, o in zip(new_size, array.shape)]
     # apply the zoom to resize the array
-    resized_array = zoom(array, zoom_factors, order=3)  # order=3 corresponds to cubic interpolation
+    resized_array = zoom(
+        array, zoom_factors, order=3
+    )  # order=3 corresponds to cubic interpolation
     return resized_array
