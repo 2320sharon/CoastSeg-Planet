@@ -247,8 +247,8 @@ class Order:
                 month_filter=config.get(
                     "month_filter",
                     [f"{i:02}" for i in range(1, 13)],
-                    tools=config.get("tools", {}),
                 ),
+                tools=config.get("tools", {}),
             ),
         )
         order.validate()
