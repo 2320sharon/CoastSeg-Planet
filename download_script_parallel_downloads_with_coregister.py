@@ -1,8 +1,7 @@
-from coastseg_planet import download
-from planet import Auth
 import os
 import asyncio
 from coastseg_planet.orders import Order, OrderConfig
+from coastseg_planet import download, utils
 
 # ----------------------------
 # 0. User Configuration
@@ -94,18 +93,7 @@ order_list = [order1, order2]
 # API_KEY = <PLANET API KEY>
 
 config_filepath = os.path.join(os.getcwd(), "config.ini")
-if os.path.exists(config_filepath) is False:
-    raise FileNotFoundError(f"Config file not found at {config_filepath}")
-config = download.read_config(config_filepath)
-# set the API key in the environment and store it
-if config.get("DEFAULT", "API_KEY") == "":
-    raise ValueError(
-        "API_KEY not found in config file. Please enter your API key in the config file and try again"
-    )
-os.environ["API_KEY"] = config["DEFAULT"]["API_KEY"]
-auth = Auth.from_env("API_KEY")
-auth.store()
-
+utils.read_API_key_from_config(config_filepath)
 
 asyncio.run(download.download_multiple_orders_in_parallel(order_list))
 print("Download complete.")

@@ -1,8 +1,7 @@
-from coastseg_planet import download
-from planet import Auth
 import os
 import asyncio
 import geopandas as gpd
+from coastseg_planet import download, utils
 
 # 0. Enter the maximum cloud cover percentage (optional, default is 0.80)
 CLOUD_COVER = 0.70
@@ -35,17 +34,7 @@ tools = {"clip", "toar"}
 # API_KEY = <PLANET API KEY>
 
 config_filepath = os.path.join(os.getcwd(), "config.ini")
-if os.path.exists(config_filepath) is False:
-    raise FileNotFoundError(f"Config file not found at {config_filepath}")
-config = download.read_config(config_filepath)
-# set the API key in the environment and store it
-if config.get("DEFAULT", "API_KEY") == "":
-    raise ValueError(
-        "API_KEY not found in config file. Please enter your API key in the config file and try again"
-    )
-os.environ["API_KEY"] = config["DEFAULT"]["API_KEY"]
-auth = Auth.from_env("API_KEY")
-auth.store()
+utils.read_API_key_from_config(config_filepath)
 
 # Create the output path that the order will be saved to
 output_path = os.path.join(os.getcwd(), "downloads", order_name)

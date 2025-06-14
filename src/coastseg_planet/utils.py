@@ -14,7 +14,7 @@ from coastseg_planet.processing import get_tiffs_with_bad_area
 from json import JSONEncoder
 
 
-def read_config(config_path: str = None, api_key_override: str = None):
+def read_API_key_from_config(config_path: str = None, api_key_override: str = None):
     """
     Main function to read config and set up the API key.
 
