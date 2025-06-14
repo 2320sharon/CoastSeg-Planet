@@ -8,6 +8,15 @@ from coastseg_planet.db.roi_repository import ROIRepository
 from coastseg_planet.db.tile_repository import TileRepository
 from coastseg_planet.db.order_repository import OrderRepository
 
+ACTION_DISPATCH = {
+    "update_metadata_roi": "insert_roi_file",
+    "update_metadata_tile": "insert_tile_file",
+    "insert_tile": "insert_tile",
+    "update_tile": "update_tile_geometry",
+    "insert_roi": "insert_roi",
+    "update_order": "insert_order",
+}
+
 
 class TileProcessor:
     """
@@ -65,14 +74,6 @@ class TileProcessor:
                     db_entry.get("geometry", ""),
                 )
                 await self.insert_tile(db_entry)
-            elif action == "insert_roi_tile":
-                logging.info(
-                    "[Processor] Inserting roi %s with tile_id %s into ROI_TILES Table with geometry %s",
-                    db_entry["roi_id"],
-                    db_entry["tile_id"],
-                    db_entry.get("geometry", ""),
-                )
-                await self.insert_roi_tile(db_entry)
             elif action == "update_tile":
                 logging.info(
                     "[Processor] Updating tile %s in Tiles Table with geometry %s",
@@ -116,24 +117,7 @@ class TileProcessor:
             tile_id=entry["tile_id"],
             capture_time=entry["capture_time"],
             geom=entry["geometry"],
-            order_name=entry.get("order_name"),
-        )
-        logging.info(f"[Processor] Inserted ROI {entry['roi_id']}")
-
-    async def insert_roi_tile(self, entry: Dict) -> None:
-        """
-        Inserts a region of interest (ROI) entry into the database.
-        Assumes that the ROI already exists in the ROIs table.
-
-        Args:
-            entry (Dict): Must include roi_id, tile_id, capture_time, geometry.
-        """
-        self.roi_repo.insert_roi_tile(
-            roi_id=entry["roi_id"],
-            tile_id=entry["tile_id"],
-            capture_time=entry["capture_time"],
-            intersection=entry.get("intersection"),
-            fallback_geom=entry.get("geometry"),
+            intersection=entry.get("intersection", None),
         )
         logging.info(f"[Processor] Inserted ROI {entry['roi_id']}")
 
@@ -171,7 +155,7 @@ class TileProcessor:
             tile_id=entry["tile_id"],
             geom=entry["geometry"],
         )
-        logging.info(f"[Processor] Updated tile {entry['tile_id']}")
+        logging.info("[Processor] Updated tile %s", entry["tile_id"])
 
     async def insert_order(self, entry: Dict) -> None:
         """
@@ -284,3 +268,29 @@ class TileProcessor:
             List[str]: A list of tile IDs that do NOT exist in the database.
         """
         return self.tile_repo.remove_existing_tile_ids(tile_ids)
+
+    def remove_existing_roi_ids(
+        self,
+        roi_ids: List[str],
+        roi_dict: Dict,
+        start_date: str,
+        end_date: str,
+        min_overlap: float,
+    ) -> List[str]:
+        """
+        Filters out ROI IDs that already exist in the 'rois' table.
+
+        Args:
+            roi_ids (List[str] | Set[str]): List or set of ROI IDs to check.
+
+        Returns:
+            List[str]: A list of ROI IDs that do NOT exist in the database.
+        """
+
+        existing_roi_ids = self.roi_repo.query_roi_tiles_by_geometry(
+            geometry=roi_dict,
+            start_date=start_date,
+            end_date=end_date,
+            min_overlap=min_overlap,
+        )
+        return [roi_id for roi_id in roi_ids if roi_id not in existing_roi_ids]
