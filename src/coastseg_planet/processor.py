@@ -80,7 +80,7 @@ class TileProcessor:
                     db_entry["tile_id"],
                     db_entry.get("geometry", ""),
                 )
-                await self.update_tile_geometry(db_entry["tile_id"])
+                await self.update_tile_geometry(db_entry)
             elif action == "insert_roi":
                 logging.info(
                     "[Processor] Inserting roi %s into Rois Table with geometry %s",
