@@ -308,9 +308,24 @@ class DownloadManager:
         print(f"Success order ids: {success_ids}")
         print(f"Running order ids: {running_ids}")
 
-        if success_ids or running_ids:
-            await self.download_existing_orders(order, success_ids + running_ids)
-        else:
+        # @todo have a queue for running orders and have a function that  checks the status of running orders then returns them when they are ready
+        if running_ids:
+            # get the order from the get_order using the running id before passing the order
+            for running_id in running_ids:
+                running_order = await self.orders_client.get_order(running_id)
+                print(f"order is already running: {running_order}")
+                # await all the running ids to finish
+                await download.await_existing_order(
+                    self.orders_client,
+                    running_order,
+                )
+
+        # update success_ids after awaiting running orders
+        success_ids = await self.fetch_order_ids(order.name, ["success"], contains_name)
+
+        if success_ids:
+            await self.download_existing_orders(order, success_ids)
+        else:  # download a new order
             await self.create_and_download_order(order)
 
     async def fetch_order_ids(self, name: str, states: List[str], contains_name: bool):
@@ -343,11 +358,6 @@ class DownloadManager:
                     "tile_mode": tile_mode,
                 }
             )
-
-        # @todo check if the order is already downloaded and remove the files that are already downloaded
-        # if not await self.check_if_order_downloaded(roi_id, order.name):
-
-        # @todo: Note in the future we can use files_to_skip to skip files that are already downloaded
 
         await asyncio.gather(
             *[
@@ -463,11 +473,16 @@ class DownloadManager:
         Raises:
             Any exceptions raised during the download process will propagate to the caller.
         """
-        # @todo: replicate the planet api download order logic to wait until the order is in a success state
+        # print(f"order: {order}")  # @debug This print statement is for debugging purposes, remove it in production
+
         # ASSUME for now that the order is in a success state
-        # ASSUME that none of the files are downloaded yet @todo account for this later
         order_id = order["id"]
+        # @todo I don't think I should do this here but if I don't it won't work
+        order = await self.orders_client.get_order(order_id)
+        if order.get("state") != "success":
+            raise ValueError(f"Order {order_id} is not in a success state.")
         all_items = get_all_items(order, directory)
+
         # remove those items that should not be downloaded from the list
         all_items = filter_skipped_filenames(all_items, files_to_skip)
 
@@ -489,7 +504,7 @@ class DownloadManager:
         else:
             await self.insert_roi_ids(items_to_download, roi_id, roi_geometry)
 
-        # @todo make this instead create a list of asyncio tasks and then await them all at once
+        # Prepare the download tasks
         tasks = self.prepare_download_tasks(
             items_to_download, order_id, roi_id, roi_geometry, progress_bar, tile_mode
         )
@@ -593,6 +608,11 @@ class DownloadManager:
         Returns:
             None
         """
+        # if the item already exists don't download it again
+        if download.validate_item_exists(item, progress_bar):
+            print(f"Skipping download for {item['filename']} as it already exists.")
+            return
+
         await self.processor.process(
             {
                 "action": "update_metadata_tile",
@@ -615,7 +635,7 @@ class DownloadManager:
         # after the tile is downloaded lets check if it was a metadata.json then read the geometry from it
         geometry = read_geometry_from_file(item["directory"] / item["filename"])
         if geometry:
-            self.update_tile_ids(
+            await self.update_tile_ids(
                 item,
                 geometry=geometry,
             )
@@ -638,6 +658,11 @@ class DownloadManager:
             roi_geometry (dict): The geometry of the region of interest.
             progress_bar (tqdm_asyncio): The progress bar to update.
         """
+        # if the item already exists don't download it again
+        if download.validate_item_exists(item, progress_bar):
+            print(f"Skipping download for {item['filename']} as it already exists.")
+            return
+
         await self.processor.process(
             {
                 "action": "update_metadata_roi",
@@ -692,6 +717,7 @@ class DownloadManager:
     ) -> None:
         """
         Extracts unique tile IDs from filenames and queues them for insertion.
+        Inserts an ROI into the database for each unique tile ID found in the items.
 
         Example:
             items = [
@@ -712,7 +738,7 @@ class DownloadManager:
         # get the tile id from the filename example: "20241004_223419_50_24b7" from "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"
         unique_ids = set("_".join(item["filename"].split("_")[:4]) for item in items)
         unique_ids.discard("manifest.json")
-        # @todo: I'm pretty sure that we only need to insert the roi id once
+        # Basically this lets us track what larger tile each ROI was clipped from
         for tile_id in unique_ids:
             await self.processor.process(
                 {
@@ -802,6 +828,7 @@ class DownloadManager:
         roi_gdf,
         months_filter,
         tools,
+        MIN_OVERLAP=0.5,
     ):
         """
         Filters satellite image items based on area coverage, date range, cloud cover, and existing database entries.
@@ -834,18 +861,21 @@ class DownloadManager:
         print(f"Number of items to download after filtering by area: {len(item_list)}")
 
         ids = download.get_ids(item_list, months_filter)
+        print(
+            f"All IDs available from Planet Data API before filtering: {ids}"
+        )  # @todo remove this
 
         # if the clip tool is not being used filter the ids to download by making sure they don't already exist in the tiles table
         if not tools.get("clip", False):
             print(f"requested ids: {ids}")
             # this is the ids that are NOT in the database
             ids = self.processor.remove_existing_tile_ids(ids)
+
             # filter items list so that it only contains these ids
             item_list = [item for item in item_list if item["id"] in ids]
             print(
                 f"Number of items to download after filtering by existing tile ids: {len(item_list)}"
             )
-            print(f"item_list: {item_list}")
             print(f"ids after filtering: {ids}")
             if not ids:
                 print(
@@ -854,6 +884,29 @@ class DownloadManager:
                 raise ValueError(
                     "No items to download after filtering by existing tile ids. Exiting."
                 )
+        else:
+            # if the clip tool is being used we need to filter by the tile IDs that are already ROIS in the database
+            ids = self.processor.remove_existing_roi_ids(
+                roi_ids=ids,
+                roi_dict=roi_dict,
+                start_date=start_date,
+                end_date=end_date,
+                min_overlap=MIN_OVERLAP,
+            )
+            # filter items list so that it only contains these ids
+            item_list = [item for item in item_list if item["id"] in ids]
+            print(
+                f"Number of items to download after filtering by existing tile ids: {len(item_list)}"
+            )
+            print(f"ids available to download after filtering: {ids}")
+            if not ids:
+                print(
+                    f"No items to download after filtering by existing tile ids. Exiting."
+                )
+                raise ValueError(
+                    "No items to download after filtering by existing tile ids. Exiting."
+                )
+
         return ids, item_list
 
     async def create_new_order_requests(self, session, order: Order):
@@ -954,16 +1007,6 @@ class DownloadManager:
         roi_dict = roi["roi_geometry"]
         roi_id = roi["roi_id"]
 
-        # CONSTRAINT this ROI ID needs to be created in the database before the order
-
-        # if the ROI ID already exists lets check if the geometry is the same as the one in the database
-        # If the ROI ID & geometry are the same then we can use the existing ROI ID
-        # if the ROI ID is the same but the geometry is different warn the user and STOP the order creation
-
-        # @todo: If the ROI ID is found in the database, we should check if the ROI ID is valid and if it exists in the database.
-        # If it does exist add the order name to the ROI_ID then store it in the database
-        # self.db.validate_roi_id(roi_id)
-
         download_path = order_dict.get("destination", os.getcwd())
         # make the download path the destionation + order name
         download_path = pathlib.Path(download_path) / order.name
@@ -976,27 +1019,40 @@ class DownloadManager:
 
             download_tasks = []
             for order_coro in asyncio.as_completed(order_tasks):
-                # get the order object from the order that was created in await_order
-                planet_order = await order_coro
+                try:
+                    # get the order object from the order that was created in await_order
+                    planet_order = await order_coro
 
-                # planet order is a dictionary that shows the contents of the order, we need to get the order to download its contents now
-                order_id = planet_order.get("id", "")
-                # Now the order is in a downloadable state (aka '_links' in the existing order dictionary contains links to download the order contents)
-                existing_order = await self.orders_client.get_order(order_id)
-                clip_tool = existing_order.get("tools", {}).get("clip", False)
-                tile_mode = (
-                    not clip_tool
-                )  # if the clip tool is not used then we are in tile mode
+                    # planet order is a dictionary that shows the contents of the order, we need to get the order to download its contents now
+                    order_id = planet_order.get("id", "")
+                    # Now the order is in a downloadable state (aka '_links' in the existing order dictionary contains links to download the order contents)
+                    existing_order = await self.orders_client.get_order(order_id)
+                    if existing_order.get("state") != "success":
+                        raise ValueError(
+                            f"Order {order_id} is not in a success state. Cannot download it. Try setting 'continue_existing'=True. Current state: {existing_order.get('state')}"
+                        )
 
-                print(f"planet order: {existing_order}")
-                # Immediately launch download
-                download_tasks.append(
-                    asyncio.create_task(
-                        self.download_order(
-                            existing_order, download_path, roi_id, roi_dict, tile_mode
+                    clip_tool = existing_order.get("tools", {}).get("clip", False)
+                    tile_mode = (
+                        not clip_tool
+                    )  # if the clip tool is not used then we are in tile mode
+
+                    # print(f"planet order: {existing_order}") @debug only
+                    # Immediately launch download
+                    download_tasks.append(
+                        asyncio.create_task(
+                            self.download_order(
+                                existing_order,
+                                download_path,
+                                roi_id,
+                                roi_dict,
+                                tile_mode,
+                            )
                         )
                     )
-                )
+                except Exception as e:
+                    print(f"Failed to process order: {e}")
+                    continue
 
             # Wait for all downloads to complete
             print(f"Waiting for all downloads to complete")
