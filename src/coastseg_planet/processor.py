@@ -257,6 +257,39 @@ class TileProcessor:
             order_id=order_id,
         )
 
+    def query_tiles_table(self, query: Dict):
+        """
+        Queries the tiles table for tile files that match the specified geometry and date range.
+
+        Args:
+            query (Dict): A dictionary containing the query parameters.
+                Required keys:
+                    - 'geometry': The geometry to filter tiles by.
+                    - 'start_date': The start date for the query range.
+                    - 'end_date': The end date for the query range.
+                Optional keys:
+                    - 'min_overlap': Minimum overlap ratio (default is 0.5). This is the minimum fraction of the geometry that must be overlapped by the tile geometry.
+
+        Returns:
+            list: A list of tile files matching the query criteria. Returns an empty list if required keys are missing.
+        """
+        # check if the dict has the key 'geometry'
+        if "geometry" not in query:
+            print("[Processor] Geometry is missing in the query. Cannot query tiles.")
+            return []
+        # check if the dict has the key 'start_date' and 'end_date'
+        if "start_date" not in query or "end_date" not in query:
+            print(
+                "[Processor] Start date or end date is missing in the query. Cannot query tiles."
+            )
+            return []
+        return self.tile_repo.query_tiles_files_by_geometry(
+            geometry=query.get("geometry"),
+            start_date=query.get("start_date"),
+            end_date=query.get("end_date"),
+            min_overlap=query.get("min_overlap", 0.5),
+        )
+
     def remove_existing_tile_ids(self, tile_ids: List[str]):
         """
         Filters out tile IDs that already exist in the 'tiles' table.

@@ -1,12 +1,20 @@
 # Standard library imports
 from shutil import copyfile
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Tuple
 from xml.dom import minidom
 import concurrent.futures
-import datetime
+from shapely.geometry import mapping
+from rasterio.mask import mask
+from datetime import datetime, timezone
 import glob
 import os
+import shutil
+import json
+from collections import Counter
 import tqdm
+import logging
+from shapely.geometry import shape, mapping
+
 
 # Third party imports
 from rasterio.warp import calculate_default_transform, reproject, Resampling
@@ -20,19 +28,533 @@ import shapely.geometry as geometry
 import skimage.morphology as morphology
 import pyproj
 
-import os
-import rasterio
-import numpy as np
-import logging
+from coastseg_planet import db_utils
 
-def create_elevation_mask_utm(tiff_file,  low_threshold, high_threshold):
-    masked_tif_path = create_elevation_mask(tiff_file,tiff_file.replace(".tif","_mask.tif"),low_threshold,high_threshold)
-    masked_projected_topobathy_tiff = reproject_to_utm(masked_tif_path, masked_tif_path.replace('.tif', '_utm.tif'))
+
+def process_analytic_tile(
+    analytic_path, xml_path, roi_path, output_folder
+) -> Tuple[str, Optional[str], Optional[str]]:
+    try:
+        output_path = create_new_output_path(
+            analytic_path, suffix="_clip_TOAR", output_location=output_folder
+        )
+        clip_toa_reproject_geotiff(analytic_path, xml_path, roi_path, output_path)
+        return "success", output_path, None
+    except Exception as e:
+        return "failed", None, str(e)
+
+
+def clip_geotiff_to_roi(
+    geotiff_path: str, roi_gdf: gpd.GeoDataFrame, output_path: Optional[str] = None
+) -> str:
+    """
+    Clips a GeoTIFF raster to the extent of a given ROI (Region of Interest) geometry and generates a new GeoTIFF file.
+    Parameters:
+        geotiff_path (str): Path to the input GeoTIFF file.
+        roi_gdf (gpd.GeoDataFrame): GeoDataFrame containing the ROI geometry. The first row's geometry is used for clipping.
+        output_path (Optional[str], optional): Path to save the clipped GeoTIFF. If None, appends '_clip.tif' to the input filename.
+    Returns:
+        str: Path to the saved clipped GeoTIFF file.
+    Raises:
+        ValueError: If the ROI does not intersect with the GeoTIFF bounds.
+    Notes:
+        - The function reprojects the ROI geometry to match the CRS of the input raster before clipping.
+        - The output GeoTIFF is compressed using LZW compression.
+    """
+    with rasterio.open(geotiff_path) as src:
+        src_crs = src.crs
+        roi_gdf = roi_gdf.to_crs(src_crs)
+        roi_geom = roi_gdf.iloc[0]["geometry"]
+
+        # Check if ROI intersects with raster bounds
+        raster_bounds_geom = shape(
+            {
+                "type": "Polygon",
+                "coordinates": [
+                    [
+                        [src.bounds.left, src.bounds.bottom],
+                        [src.bounds.left, src.bounds.top],
+                        [src.bounds.right, src.bounds.top],
+                        [src.bounds.right, src.bounds.bottom],
+                        [src.bounds.left, src.bounds.bottom],
+                    ]
+                ],
+            }
+        )
+        if not roi_geom.intersects(raster_bounds_geom):
+            raise ValueError("ROI does not intersect with the GeoTIFF bounds.")
+
+        out_image, out_transform = mask(src, [mapping(roi_geom)], crop=True)
+        out_meta = src.meta.copy()
+        out_meta.update(
+            {
+                "driver": "GTiff",
+                "height": out_image.shape[1],
+                "width": out_image.shape[2],
+                "transform": out_transform,
+                "compress": "lzw",
+            }
+        )
+
+        if output_path is None:
+            base, _ = os.path.splitext(geotiff_path)
+            output_path = f"{base}_clip.tif"
+
+        with rasterio.open(output_path, "w", **out_meta) as dest:
+            dest.write(out_image)
+
+    return output_path
+
+
+def process_udm_tile(
+    udm_path, roi_path, output_folder
+) -> Tuple[str, Optional[str], Optional[str]]:
+    if not udm_path:
+        return "missing", None, None
+    try:
+        roi_gdf = gpd.read_file(roi_path)
+        output_path = create_new_output_path(
+            udm_path, suffix="_clip", output_location=output_folder
+        )
+        clip_geotiff_to_roi(udm_path, roi_gdf, output_path)
+        return "success", output_path, None
+    except Exception as e:
+        return "failed", None, str(e)
+
+
+def process_tile(
+    tile_id: str,
+    files: list,
+    roi_path: str,
+    output_folder: str,
+    require_analytic_success_for_udm: bool = True,
+) -> dict:
+    log = {
+        "tile_id": tile_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "analytic_status": None,
+        "udm_status": None,
+        "analytic_path": None,
+        "udm_path": None,
+        "xml_path": None,
+        "json_path": None,
+        "errors": [],
+    }
+
+    paths = find_tile_files(files)
+
+    if paths["xml"] and paths["analytic"]:
+        analytic_status, analytic_path, analytic_err = process_analytic_tile(
+            paths["analytic"], paths["xml"], roi_path, output_folder
+        )
+        log["analytic_status"] = analytic_status
+        log["analytic_path"] = analytic_path
+        if analytic_err:
+            log["errors"].append(f"Analytic error: {analytic_err}")
+    else:
+        log["analytic_status"] = "missing"
+        if not paths["xml"]:
+            log["errors"].append("Missing XML file.")
+        if not paths["analytic"]:
+            log["errors"].append("Missing Analytic TIFF.")
+
+    if require_analytic_success_for_udm and log["analytic_status"] != "success":
+        log["udm_status"] = "skipped"
+    else:
+        udm_status, udm_path, udm_err = process_udm_tile(
+            paths["udm"], roi_path, output_folder
+        )
+        log["udm_status"] = udm_status
+        log["udm_path"] = udm_path
+        if udm_err:
+            log["errors"].append(f"UDM error: {udm_err}")
+
+    # Save XML and JSON metadata files to output folder
+    copied_xml_path = copy_file_to_output(paths["xml"], output_folder)
+
+    copied_json_path = copy_file_to_output(paths["json"], output_folder)
+
+    log["xml_path"] = copied_xml_path
+    log["json_path"] = copied_json_path
+
+    return log
+
+
+def run_pipeline(
+    roi_path: str,
+    output_folder: str,
+    date_range: Tuple[str, str],
+    min_overlap: float,
+    db_path: str,
+    log_path: Optional[str] = None,
+    require_analytic_success_for_udm: bool = True,
+    quick_fail: bool = False,
+) -> List[dict]:
+    """
+    Main processing loop. This queries the database for tiles that intersect the ROI,
+    clips and converts them to TOA, and writes logs + summaries.
+
+    Parameters:
+    - require_analytic_success_for_udm: If True, UDM processing is skipped if Analytic fails.
+    - quick_fail: If True, stops after the first error.
+    - log_path: If provided, writes a JSONL log of processing results.
+    Returns:
+    - List of log entries for each tile processed.
+    """
+    os.makedirs(output_folder, exist_ok=True)
+    processor = db_utils.create_processor(db_path)
+    # Load ROI geometry from the provided path as a dictionary so we can query the database with it
+    roi_geom = load_roi_geometry_as_geojson(roi_path)
+    tiles = query_tiles(roi_geom, date_range, min_overlap, processor)
+
+    log_entries = []
+
+    for tile_id, files in tqdm.tqdm(tiles.items(), desc="Processing Tiles"):
+        log_entry = process_tile(
+            tile_id,
+            files,
+            roi_path,
+            output_folder,
+            require_analytic_success_for_udm=require_analytic_success_for_udm,
+        )
+        log_entries.append(log_entry)
+        print_tile_status(log_entry)
+
+        if quick_fail and (
+            log_entry["analytic_status"] == "failed"
+            or log_entry["udm_status"] == "failed"
+        ):
+            print("\n⚠️ Quick fail activated. Halting pipeline due to error.")
+            print(f"Tile ID       : {log_entry['tile_id']}")
+            print(f"Analytic Stat : {log_entry['analytic_status']}")
+            print(f"UDM Stat      : {log_entry['udm_status']}")
+            for i, err in enumerate(log_entry["errors"], 1):
+                print(f"Error {i}      : {err}")
+            break
+
+    if log_path:
+        write_log(log_path, log_entries)
+        print(f"\n📄 Log written to: {log_path}")
+
+    summarize_log(log_entries)
+    return log_entries
+
+
+def find_tile_files(files: list) -> dict:
+    """
+    Finds specific tile files from a list of filenames.
+
+    Returns a dictionary with:
+    - 'xml'       : metadata XML file (e.g. endswith 'metadata.xml')
+    - 'json'      : tile metadata JSON file (filename contains 'metadata.json')
+    - 'udm'       : UDM2 file (endswith 'udm2.tif')
+    - 'analytic'  : AnalyticMS image (endswith 'AnalyticMS.tif' and not a UDM)
+    """
+    return {
+        "xml": next((f for f in files if f.endswith("metadata.xml")), None),
+        "json": next((f for f in files if "metadata.json" in f), None),
+        "udm": next((f for f in files if f.endswith("udm2.tif")), None),
+        "analytic": next(
+            (f for f in files if f.endswith("AnalyticMS.tif") and "udm" not in f), None
+        ),
+    }
+
+
+def query_tiles(
+    roi_geom: dict, date_range: Tuple[str, str], min_overlap: float, processor
+) -> dict:
+    query = {
+        "geometry": roi_geom,
+        "start_date": date_range[0],
+        "end_date": date_range[1],
+        "min_overlap": min_overlap,
+    }
+    return processor.query_tiles_table(query=query)
+
+
+def write_log(log_path: str, entries: List[dict]):
+    with open(log_path, "w") as f:
+        for entry in entries:
+            json.dump(entry, f)
+            f.write("\n")
+
+
+def summarize_log(log_entries: List[dict]):
+    a_stats = Counter(entry["analytic_status"] for entry in log_entries)
+    u_stats = Counter(entry["udm_status"] for entry in log_entries)
+    failed = [e for e in log_entries if e["errors"]]
+
+    print("\n🔍 Pipeline Summary")
+    print("  ✅ Analytic Status:", dict(a_stats))
+    print("  🧭 UDM Status     :", dict(u_stats))
+    print(f"  ❌ Failed Tiles   : {len(failed)}")
+
+
+def print_tile_status(log_entry):
+    a = log_entry["analytic_status"]
+    u = log_entry["udm_status"]
+    print(
+        f"[{log_entry['tile_id']}] Analytic: {a} | UDM: {u} | Errors: {len(log_entry['errors'])}"
+    )
+
+
+def load_roi_geometry_as_geojson(roi_path: str) -> dict:
+    """
+    Loads the geometry of the first feature from a GeoJSON file containing ROI (Region of Interest) data as a dictionary.
+
+    Args:
+        roi_path (str): The file path to the GeoJSON file containing ROI features.
+
+    Returns:
+        dict: The geometry dictionary of the first feature in the GeoJSON file.
+        Example:
+        {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [-123.456, 45.678],
+                    [-123.456, 46.678],
+                    [-122.456, 46.678],
+                    [-122.456, 45.678],
+                    [-123.456, 45.678]
+                ]
+            ]
+        }
+
+    Raises:
+        FileNotFoundError: If the specified file does not exist.
+        json.JSONDecodeError: If the file is not a valid JSON.
+        KeyError: If the expected keys ('features' or 'geometry') are missing in the GeoJSON structure.
+    """
+    with open(roi_path, "r") as f:
+        geojson = json.load(f)
+    return geojson["features"][0]["geometry"]
+
+
+def create_new_output_path(
+    input_path: str, suffix: str = "_clip_TOAR", output_location: Optional[str] = None
+) -> str:
+    base, ext = os.path.splitext(input_path)
+    new_path = f"{base}{suffix}{ext}"
+    if output_location:
+        new_path = os.path.join(output_location, os.path.basename(new_path))
+    return new_path
+
+
+def copy_file_to_output(
+    source_path: Optional[str], output_folder: str
+) -> Optional[str]:
+    """
+    Copies a file to the output folder if the path is valid.
+
+    Args:
+        source_path (str): Original file path.
+        output_folder (str): Destination folder.
+
+    Returns:
+        str or None: Destination path if copied, else None.
+    """
+    if not source_path:
+        return None
+    try:
+        dest_path = os.path.join(output_folder, os.path.basename(source_path))
+        os.makedirs(output_folder, exist_ok=True)
+        shutil.copy2(source_path, dest_path)
+        return dest_path
+    except Exception as e:
+        return None
+
+
+def parse_reflectance_coeffs(xml_path: str) -> dict:
+    xmldoc = minidom.parse(xml_path)
+    coeffs = {}
+    for node in xmldoc.getElementsByTagName("ps:bandSpecificMetadata"):
+        bn_node = node.getElementsByTagName("ps:bandNumber")[0]
+        coeff_node = node.getElementsByTagName("ps:reflectanceCoefficient")[0]
+        if bn_node and coeff_node:
+            band = int(bn_node.firstChild.data)
+            coeff = float(coeff_node.firstChild.data)
+            coeffs[band] = coeff
+    return coeffs
+
+
+def clip_toa_reproject_geotiff(
+    image_path: str,
+    xml_path: str,
+    roi_path: str,
+    output_path: str,
+    output_epsg: Optional[str] = None,
+) -> str:
+    BAND_COUNT = 4
+    SCALE_FACTOR = 10000
+
+    # Read ROI and align CRS
+    roi_gdf = gpd.read_file(roi_path)
+    with rasterio.open(image_path) as src:
+        if roi_gdf.crs != src.crs:
+            roi_gdf = roi_gdf.to_crs(src.crs)
+
+        roi_geom = [mapping(roi_gdf.iloc[0].geometry)]
+        clipped, transform = mask(src, roi_geom, crop=True)
+        meta = src.meta.copy()
+        meta.update(
+            {
+                "height": clipped.shape[1],
+                "width": clipped.shape[2],
+                "transform": transform,
+                "compress": "lzw",
+                "count": BAND_COUNT,
+                "dtype": rasterio.uint16,
+            }
+        )
+        src_crs = src.crs
+
+    # Parse reflectance coefficients
+    coeffs = parse_reflectance_coeffs(xml_path)
+
+    # Apply TOA conversion
+    toa_array = np.array(
+        [clipped[i] * coeffs.get(i + 1, 1.0) * SCALE_FACTOR for i in range(BAND_COUNT)]
+    ).astype(rasterio.uint16)
+
+    # Optional reprojection
+    if output_epsg:
+        dst_crs = rasterio.crs.CRS.from_string(output_epsg)
+        transform, width, height = calculate_default_transform(
+            src_crs,
+            dst_crs,
+            meta["width"],
+            meta["height"],
+            *rasterio.transform.array_bounds(
+                meta["height"], meta["width"], meta["transform"]
+            ),
+        )
+        reprojected = np.empty((BAND_COUNT, height, width), dtype=rasterio.uint16)
+        for i in range(BAND_COUNT):
+            reproject(
+                source=toa_array[i],
+                destination=reprojected[i],
+                src_transform=meta["transform"],
+                src_crs=src_crs,
+                dst_transform=transform,
+                dst_crs=dst_crs,
+                resampling=Resampling.nearest,
+            )
+        toa_array = reprojected
+        meta.update(
+            {"crs": dst_crs, "transform": transform, "width": width, "height": height}
+        )
+    else:
+        meta.update({"crs": src_crs})
+
+    # Write final output
+    with rasterio.open(output_path, "w", **meta) as dst:
+        for i in range(BAND_COUNT):
+            dst.write(toa_array[i], i + 1)
+
+    print(f"TOA reflectance file saved to: {output_path}")
+
+    return output_path
+
+
+def process_analytic_tile(
+    analytic_path, xml_path, roi_path, output_folder
+) -> Tuple[str, Optional[str], Optional[str]]:
+    try:
+        output_path = create_new_output_path(
+            analytic_path, suffix="_clip_TOAR", output_location=output_folder
+        )
+        clip_toa_reproject_geotiff(analytic_path, xml_path, roi_path, output_path)
+        return "success", output_path, None
+    except Exception as e:
+        return "failed", None, str(e)
+
+
+def process_udm_tile(
+    udm_path, roi_path, output_folder
+) -> Tuple[str, Optional[str], Optional[str]]:
+    if not udm_path:
+        return "missing", None, None
+    try:
+        roi_gdf = gpd.read_file(roi_path)
+        output_path = create_new_output_path(
+            udm_path, suffix="_clip", output_location=output_folder
+        )
+        clip_geotiff_to_roi(udm_path, roi_gdf, output_path)
+        return "success", output_path, None
+    except Exception as e:
+        return "failed", None, str(e)
+
+
+def process_tile(
+    tile_id: str,
+    files: list,
+    roi_path: str,
+    output_folder: str,
+    require_analytic_success_for_udm: bool = True,
+) -> dict:
+    log = {
+        "tile_id": tile_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "analytic_status": None,
+        "udm_status": None,
+        "analytic_path": None,
+        "udm_path": None,
+        "xml_path": None,
+        "json_path": None,
+        "errors": [],
+    }
+
+    paths = find_tile_files(files)
+
+    if paths["xml"] and paths["analytic"]:
+        analytic_status, analytic_path, analytic_err = process_analytic_tile(
+            paths["analytic"], paths["xml"], roi_path, output_folder
+        )
+        log["analytic_status"] = analytic_status
+        log["analytic_path"] = analytic_path
+        if analytic_err:
+            log["errors"].append(f"Analytic error: {analytic_err}")
+    else:
+        log["analytic_status"] = "missing"
+        if not paths["xml"]:
+            log["errors"].append("Missing XML file.")
+        if not paths["analytic"]:
+            log["errors"].append("Missing Analytic TIFF.")
+
+    if require_analytic_success_for_udm and log["analytic_status"] != "success":
+        log["udm_status"] = "skipped"
+    else:
+        udm_status, udm_path, udm_err = process_udm_tile(
+            paths["udm"], roi_path, output_folder
+        )
+        log["udm_status"] = udm_status
+        log["udm_path"] = udm_path
+        if udm_err:
+            log["errors"].append(f"UDM error: {udm_err}")
+
+    # Save XML and JSON metadata files to output folder
+    copied_xml_path = copy_file_to_output(paths["xml"], output_folder)
+
+    copied_json_path = copy_file_to_output(paths["json"], output_folder)
+
+    log["xml_path"] = copied_xml_path
+    log["json_path"] = copied_json_path
+
+    return log
+
+
+def create_elevation_mask_utm(tiff_file, low_threshold, high_threshold):
+    masked_tif_path = create_elevation_mask(
+        tiff_file, tiff_file.replace(".tif", "_mask.tif"), low_threshold, high_threshold
+    )
+    masked_projected_topobathy_tiff = reproject_to_utm(
+        masked_tif_path, masked_tif_path.replace(".tif", "_utm.tif")
+    )
     return masked_projected_topobathy_tiff
 
-def get_mask_in_matching_projection(
-    source_tiff: str, mask_tiff: str
-) -> np.ndarray:
+
+def get_mask_in_matching_projection(source_tiff: str, mask_tiff: str) -> np.ndarray:
     """
     Reprojects the mask TIFF to match the resolution and grid of the source TIFF.
     This returns the mask as a boolean numpy array.
@@ -74,6 +596,7 @@ def get_mask_in_matching_projection(
 
     return reprojected_mask
 
+
 def get_log_file_name(base_name="conversion.log"):
     """Generate a new log file name with an incremented number if the base name already exists."""
     if not os.path.exists(base_name):
@@ -85,6 +608,7 @@ def get_log_file_name(base_name="conversion.log"):
         counter += 1
         new_name = f"{base}_{counter}{ext}"
     return new_name
+
 
 def read_roi_from_config(filepath, roi_id: str = ""):
     gdf = gpd.read_file(filepath)
@@ -114,7 +638,7 @@ def convert_directory_to_model_format(
     crs: int = None,
     verbose: bool = False,
     number_of_bands: int = 3,
-    save_path: str = '',
+    save_path: str = "",
 ):
     """
     Convert all files with a specific suffix in a directory to a specific TOAR model format.
@@ -132,7 +656,7 @@ def convert_directory_to_model_format(
     Returns:
         None
     """
-    if save_path == '':
+    if save_path == "":
         save_path = directory
     if not os.path.exists(save_path):
         os.makedirs(save_path, exist_ok=True)
@@ -141,15 +665,19 @@ def convert_directory_to_model_format(
     if len(inputs_paths) == 0:
         print(f"No files found with suffix {input_suffix} in {directory}")
         return
-    
+
     for target_path in tqdm.tqdm(inputs_paths, desc="Converting files to model format"):
         base_filename = get_base_filename(target_path, separator)
-        output_path = os.path.join(save_path, f"{base_filename}{separator}{output_suffix}")
-        
+        output_path = os.path.join(
+            save_path, f"{base_filename}{separator}{output_suffix}"
+        )
+
         try:
             if os.path.exists(output_path):
                 os.remove(output_path)
-            convert_planet_to_model_format(target_path, output_path, number_of_bands=number_of_bands, crs=crs)
+            convert_planet_to_model_format(
+                target_path, output_path, number_of_bands=number_of_bands, crs=crs
+            )
             if verbose:
                 print(f"Converting to model format and saving to {output_path}")
         except Exception as e:
@@ -294,7 +822,6 @@ def match_resolution_and_grid(
                     dst_crs=target_crs,
                     resampling=Resampling.nearest,
                 )
-        
 
     return output_tiff
 
@@ -356,7 +883,7 @@ def reproject_to_utm(input_tiff, output_tiff):
         return output_tiff
 
 
-def format_landsat_tiff(landsat_path: str, output_dir:str="") -> str:
+def format_landsat_tiff(landsat_path: str, output_dir: str = "") -> str:
     """
     Formats a Landsat TIFF file by converting it from float to uint16, changing the blocksize to 256x256,
     creating a tiled raster, and converting it to a 3 band RGB ordered TIFF.
@@ -378,7 +905,7 @@ def format_landsat_tiff(landsat_path: str, output_dir:str="") -> str:
     output_path = landsat_processed_path.replace(".tif", "_model_format.tif")
     # create the output path at the output directory if specified
     if output_dir:
-         output_path = os.path.join(output_dir, os.path.basename(output_path))
+        output_path = os.path.join(output_dir, os.path.basename(output_path))
     # convert the landsat to a 3 band RGB ordered tiff
     convert_landsat_to_model_format(landsat_processed_path, output_path)
     if os.path.exists(tmp_path):
@@ -796,16 +1323,6 @@ def create_geometry(
     return None
 
 
-# def create_gdf_from_shoreline(shoreline: List[np.ndarray], output_epsg: int,geomtype:str = "lines"):
-#     """geomtype can be lines or points"""
-#     geom = create_geometry(geomtype, shoreline)
-#     if geom:
-#         # Creating a GeoDataFrame directly with all attributes
-#         shoreline_gdf = gpd.GeoDataFrame( geometry=[geom],crs=f"EPSG:{output_epsg}")
-#         return shoreline_gdf
-#     return None
-
-
 def create_gdf_from_shoreline(
     shoreline: List[List[float]], output_epsg: int, date: str, geomtype: str = "lines"
 ):
@@ -826,7 +1343,7 @@ def create_gdf_from_shoreline(
     geom = create_geometry(geomtype, shoreline)
     if geom:
         # Convert date string to datetime object
-        date = datetime.datetime.strptime(date, "%Y-%m-%d-%H-%M-%S")
+        date = datetime.strptime(date, "%Y-%m-%d-%H-%M-%S")
         # Creating a GeoDataFrame directly with all attributes
         shoreline_gdf = gpd.GeoDataFrame(
             {"date": [date]}, geometry=[geom], crs=f"EPSG:{output_epsg}"
@@ -840,7 +1357,7 @@ def get_date_from_path(filename):
     "_".join(filename.split("_")[:2])
 
     # Convert to datetime object
-    dt = datetime.datetime.strptime("_".join(filename.split("_")[:2]), "%Y%m%d_%H%M%S")
+    dt = datetime.strptime("_".join(filename.split("_")[:2]), "%Y%m%d_%H%M%S")
 
     return dt.strftime("%Y-%m-%d-%H-%M-%S")
 
@@ -1149,7 +1666,6 @@ def create_tiled_raster(src_filepath, dst_filepath, block_size=256):
         None
     """
 
-
     # Open the source file
     with rasterio.open(src_filepath) as src:
         # Copy the profile from the source
@@ -1239,9 +1755,10 @@ def normalize_band(band: np.ndarray) -> np.ndarray:
 #     normalized_band = ((band - min_val) / (max_val - min_val)) * 255
 #     return normalized_band.astype(np.uint8)
 
-def reproject_raster(input_file: str,output_file:str, target_crs) -> None:
+
+def reproject_raster(input_file: str, output_file: str, target_crs) -> None:
     """Reproject a raster to a new CRS if it is not already in that CRS and replace the original file.
-    
+
     Args:
         input_file (str): The file path to the input raster file.
         target_crs (dict or str): The target coordinate reference system.
@@ -1249,7 +1766,7 @@ def reproject_raster(input_file: str,output_file:str, target_crs) -> None:
     with rasterio.open(input_file) as src:
         if src.crs == target_crs:
             print(f"The raster is already in the target CRS: {target_crs}")
-            return  output_file
+            return output_file
         else:
             print(f"Reprojecting the raster to {target_crs}")
             # Calculate the transform and dimensions for the new CRS
@@ -1258,7 +1775,12 @@ def reproject_raster(input_file: str,output_file:str, target_crs) -> None:
             )
             meta = src.meta.copy()
             meta.update(
-                {"crs": target_crs, "transform": transform, "width": width, "height": height}
+                {
+                    "crs": target_crs,
+                    "transform": transform,
+                    "width": width,
+                    "height": height,
+                }
             )
 
             with rasterio.open(output_file, "w", **meta) as dst:
@@ -1274,19 +1796,16 @@ def reproject_raster(input_file: str,output_file:str, target_crs) -> None:
                     )
     return output_file
 
-    # Replace the original file with the reprojected file
-
-    print(f"Reprojected raster saved as the original file: {input_file}")
 
 def reproject_raster_in_place(input_file: str, target_crs) -> None:
     """Reproject a raster to a new CRS if it is not already in that CRS and replace the original file.
-    
+
     Args:
         input_file (str): The file path to the input raster file.
         target_crs (dict or str): The target coordinate reference system.
     """
-    temp_file = 'temp_reprojected.tif'
-    
+    temp_file = "temp_reprojected.tif"
+
     with rasterio.open(input_file) as src:
         if src.crs == target_crs:
             print(f"The raster is already in the target CRS: {target_crs}")
@@ -1299,7 +1818,12 @@ def reproject_raster_in_place(input_file: str, target_crs) -> None:
             )
             meta = src.meta.copy()
             meta.update(
-                {"crs": target_crs, "transform": transform, "width": width, "height": height}
+                {
+                    "crs": target_crs,
+                    "transform": transform,
+                    "width": width,
+                    "height": height,
+                }
             )
 
             with rasterio.open(temp_file, "w", **meta) as dst:
@@ -1318,174 +1842,6 @@ def reproject_raster_in_place(input_file: str, target_crs) -> None:
     os.remove(input_file)
     os.rename(temp_file, input_file)
     print(f"Reprojected raster saved as the original file: {input_file}")
-
-# def convert_planet_to_model_format(
-#     input_file: str, output_file: str, number_of_bands: int = 3, crs=None
-# ) -> None:
-#     """Process the raster file by normalizing and reordering its bands, and save the output.
-
-#     This is used for 4 band planet imagery that needs to be reordered to RGBN from BGRN for the zoo model.
-
-#     Args:
-#         input_file (str): The file path to the input raster file.
-#         output_file (str): The file path to save the processed raster file.
-#         number_of_bands (int): The number of bands to keep in the output.
-#         crs (dict or str, optional): The target coordinate reference system.
-
-#     Reads the input raster file, normalizes its bands to the range [0, 255],
-#     reorders the bands to RGB followed by the remaining bands, and saves the
-#     processed raster to the specified output file.
-
-#     The function assumes the input raster has at least three bands (blue, green, red)
-#     and possibly additional bands.
-
-#     Prints the min and max values of the original and normalized red, green, and blue bands,
-#     and the shape of the reordered bands array.
-#     """
-#     temp_file = "reprojected_temp.tif"
-
-#     if crs:
-#         print(f"Reprojecting the raster to {crs}")
-#         with rasterio.open(input_file) as src:
-#             if src.crs == crs:
-#                 print(f"The raster is already in the target CRS: {crs}")
-#                 reprojected_file = input_file
-#             else:
-#                 # Calculate the transform and dimensions for the new CRS
-#                 transform, width, height = calculate_default_transform(
-#                     src.crs, crs, src.width, src.height, *src.bounds
-#                 )
-#                 meta = src.meta.copy()
-#                 meta.update(
-#                     {"crs": crs, "transform": transform, "width": width, "height": height}
-#                 )
-
-#                 with rasterio.open(temp_file, "w", **meta) as dst:
-#                     for i in range(1, src.count + 1):
-#                         reproject(
-#                             source=rasterio.band(src, i),
-#                             destination=rasterio.band(dst, i),
-#                             src_transform=src.transform,
-#                             src_crs=src.crs,
-#                             dst_transform=transform,
-#                             dst_crs=crs,
-#                             resampling=Resampling.nearest,
-#                         )
-
-#             reprojected_file = temp_file
-#     else:
-#         reprojected_file = input_file
-
-#     with rasterio.open(reprojected_file) as src:
-#         # Read the bands
-#         band1 = src.read(1)  # blue
-#         band2 = src.read(2)  # green
-#         band3 = src.read(3)  # red
-#         other_bands = [src.read(i) for i in range(4, src.count + 1)]
-
-#         # Normalize the bands
-#         band1_normalized = normalize_band(band1)
-#         band2_normalized = normalize_band(band2)
-#         band3_normalized = normalize_band(band3)
-#         other_bands_normalized = [normalize_band(band) for band in other_bands]
-
-#         # Reorder the bands RGB and other bands
-#         reordered_bands = np.dstack(
-#             [band3_normalized, band2_normalized, band1_normalized]
-#             + other_bands_normalized
-#         )
-#         reordered_bands = reordered_bands[:, :, :number_of_bands]
-
-#         # Get the metadata
-#         meta = src.meta.copy()
-
-#         # Update the metadata to reflect the number of layers and data type
-#         meta.update(
-#             {
-#                 "count": reordered_bands.shape[2],
-#                 "dtype": reordered_bands.dtype,
-#                 "driver": "GTiff",
-#             }
-#         )
-
-#         # Save the image
-#         with rasterio.open(output_file, "w", **meta) as dst:
-#             for i in range(reordered_bands.shape[2]):
-#                 dst.write(reordered_bands[:, :, i], i + 1)
-
-#     # Delete the temporary file if it was created
-#     if crs and os.path.exists(temp_file):
-#         os.remove(temp_file)
-
-#     return output_file
-
-
-# def convert_planet_to_model_format(input_file: str, output_file: str,number_of_bands:int=3) -> None:
-#     """Process the raster file by normalizing and reordering its bands, and save the output.
-
-#     This is used for 4 band planet imagery that needs to be reordered to RGBN from BGRN for the zoo model.
-
-#     Args:
-#         input_file (str): The file path to the input raster file.
-#         output_file (str): The file path to save the processed raster file.
-
-#     Reads the input raster file, normalizes its bands to the range [0, 255],
-#     reorders the bands to RGB followed by the remaining bands, and saves the
-#     processed raster to the specified output file.
-
-#     The function assumes the input raster has at least three bands (blue, green, red)
-#     and possibly additional bands.
-
-#     Prints the min and max values of the original and normalized red, green, and blue bands,
-#     and the shape of the reordered bands array.
-#     """
-#     with rasterio.open(input_file) as src:
-#         # Read the bands
-#         band1 = src.read(1)  # blue
-#         band2 = src.read(2)  # green
-#         band3 = src.read(3)  # red
-#         other_bands = [src.read(i) for i in range(4, src.count + 1)]
-
-#         # print(f"red min: {np.min(band3)}, red max: {np.max(band3)}")
-#         # print(f"green min: {np.min(band2)}, green max: {np.max(band2)}")
-#         # print(f"blue min: {np.min(band1)}, blue max: {np.max(band1)}")
-
-#         # Normalize the bands
-#         band1_normalized = normalize_band(band1)
-#         band2_normalized = normalize_band(band2)
-#         band3_normalized = normalize_band(band3)
-#         other_bands_normalized = [normalize_band(band) for band in other_bands]
-
-#         # print(f"red min: {np.min(band3_normalized)}, red max: {np.max(band3_normalized)}")
-#         # print(f"green min: {np.min(band2_normalized)}, green max: {np.max(band2_normalized)}")
-#         # print(f"blue min: {np.min(band1_normalized)}, blue max: {np.max(band1_normalized)}")
-
-#         # Reorder the bands RGB and other bands
-#         reordered_bands = np.dstack([band3_normalized, band2_normalized, band1_normalized] + other_bands_normalized)
-#         reordered_bands = reordered_bands[:,:,:number_of_bands]
-#         # Get the metadata
-#         meta = src.meta.copy()
-
-#         # print(f"dtype: {reordered_bands.dtype}, shape: {reordered_bands.shape}")
-#         # Update the metadata to reflect the number of layers and data type
-#         meta.update({
-#             "count": reordered_bands.shape[2],
-#             "dtype": reordered_bands.dtype,
-#             "driver": 'GTiff'
-#         })
-#         # Preserve the CRS explicitly
-#         if src.crs:
-#             meta.update({
-#                 "crs": src.crs
-#             })
-
-#         # Save the image
-#         with rasterio.open(output_file, 'w', **meta) as dst:
-#             for i in range(reordered_bands.shape[2]):
-#                 dst.write(reordered_bands[:, :, i], i + 1)
-
-
-#     return output_file
 
 
 def convert_planet_to_model_format(
@@ -1513,8 +1869,12 @@ def convert_planet_to_model_format(
     """
     temp_file = "reprojected_temp.tif"
     log_file = get_log_file_name("conversion.log")
-    logging.basicConfig(level=logging.DEBUG, filename=log_file, filemode='w',
-                        format='%(name)s - %(levelname)s - %(message)s')
+    logging.basicConfig(
+        level=logging.DEBUG,
+        filename=log_file,
+        filemode="w",
+        format="%(name)s - %(levelname)s - %(message)s",
+    )
 
     try:
         if crs:
@@ -1534,7 +1894,12 @@ def convert_planet_to_model_format(
                     )
                     meta = src.meta.copy()
                     meta.update(
-                        {"crs": crs, "transform": transform, "width": width, "height": height}
+                        {
+                            "crs": crs,
+                            "transform": transform,
+                            "width": width,
+                            "height": height,
+                        }
                     )
 
                     with rasterio.open(temp_file, "w", **meta) as dst:
@@ -1560,7 +1925,9 @@ def convert_planet_to_model_format(
                 os.remove(output_file)
                 logging.info(f"Existing output file {output_file} deleted.")
             except Exception as e:
-                logging.error(f"Could not delete existing output file {output_file}: {e}")
+                logging.error(
+                    f"Could not delete existing output file {output_file}: {e}"
+                )
                 raise e
 
         with rasterio.open(reprojected_file) as src:
@@ -1594,8 +1961,6 @@ def convert_planet_to_model_format(
                     "driver": "GTiff",
                 }
             )
-
-
 
             # Save the image
             with rasterio.open(output_file, "w", **meta) as dst:

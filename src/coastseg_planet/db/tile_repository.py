@@ -33,6 +33,34 @@ class TileRepository:
         cursor.execute(query, (tile_id, geom_param, capture_time, order_name))
         self.db.commit()
 
+
+    def query_tiles_files_by_geometry(
+        self,
+        geometry,
+        start_date,
+        end_date,
+        min_overlap=0.9,
+        statuses={"downloaded"},
+    ):
+        placeholders = ", ".join(["?"] * len(statuses))
+        sql = f"""
+        SELECT t.tile_id, tf.filepath
+        FROM tile_files tf
+        JOIN tiles t ON tf.tile_id = t.tile_id
+        WHERE t.capture_time BETWEEN ? AND ?
+        AND tf.status IN ({placeholders})
+        AND ST_Area(ST_Intersection(t.geometry, ST_GeomFromGeoJSON(?))) / ST_Area(t.geometry) >= ?
+        """
+        params = [start_date, end_date, *statuses, geometry, min_overlap]
+        rows = (
+            self.db.get_cursor().execute(sql, params).fetchall()
+        )  # rows in format [(tile_id, filepath), ...]
+        tile_dict = {}
+        for tile_id, filepath in rows:
+            tile_dict.setdefault(tile_id, []).append(filepath)
+
+        return tile_dict  # in format {tile_id1: [filepath1, filepath2], tile_id2: [...], ...}
+
     def query_tiles_by_geometry(
         self,
         geometry,
