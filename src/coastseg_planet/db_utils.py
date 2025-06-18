@@ -23,6 +23,23 @@ extractors = {
 }
 
 
+def create_processor(db_path):
+
+    # initialize the database
+    db = BaseDuckDB(db_path)
+    db.use_spatial_extension()
+    db.create_tables()
+
+    # Instantiate the repositories
+    roi_repo = ROIRepository(db)
+    tile_repo = TileRepository(db)
+    order_repo = OrderRepository(db)
+
+    # this handles the interaction with the database
+    # and the processing of the tiles
+    return TileProcessor(roi_repo, tile_repo, order_repo)
+
+
 async def insert_order(folder_path: str, processor):
     """
     Attempts to insert an order into the database using the folder name and manifest.json file.
