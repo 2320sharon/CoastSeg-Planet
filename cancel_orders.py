@@ -16,11 +16,11 @@ async def cancel_order_by_name(
             cl, order_name, states=order_states
         )
         print(f"order_ids: {order_ids}")
-        canceled_orders_info=await cl.cancel_orders(order_ids)
+        canceled_orders_info = await cl.cancel_orders(order_ids)
         print(f"canceled_orders_info: {canceled_orders_info}")
 
 
-order_name = "Santa_Cruz_boardwalk_TOAR_enabled_analytic_udm2_full_dataset_cloud_cover_60"
+order_name = "SAMPLE_ORDER_NAME"  # replace with your order name
 
 # cancel all the order ids
-asyncio.run(cancel_order_by_name(order_name,order_states=["queued","running"]))
+asyncio.run(cancel_order_by_name(order_name, order_states=["queued", "running"]))
