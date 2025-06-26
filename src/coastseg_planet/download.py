@@ -32,6 +32,8 @@ def validate_item_exists(item: Dict[str, Any], progress_bar: tqdm_asyncio) -> bo
     Returns:
         bool: True if the file exists (and progress bar is updated), False otherwise.
     """
+    # @todo maybe don't download if the item exists at the location in the DB?
+    # @todo actually maybe we should do this before the download starts?
     # if the item already exists don't download it again
     if os.path.exists(item["directory"] / item["filename"]):
         progress_bar.update(1)
@@ -443,12 +445,12 @@ def filter_items_by_area(
     print(f"Number of clipped items: {len(clipped_gdf)}")
 
     # Debugging output
-    # print(f"clipped_gdf:\n{clipped_gdf}")
+    #print(f"clipped_gdf:\n{clipped_gdf}")
     # print the roi covererage ratios
-    # print(f"ROI coverage ratios:\n{clipped_gdf['roi_coverage_ratio']}")
+    #print(f"ROI coverage ratios:\n{clipped_gdf['roi_coverage_ratio']}")
 
     # Debugging only: Save to geojson for testing purposes
-    # clipped_gdf.to_file("clipped_items.geojson", driver="GeoJSON")
+    #clipped_gdf.to_file("clipped_items.geojson", driver="GeoJSON")
 
     # Filter based on thresholds
     filtered_gdf = clipped_gdf[
@@ -850,40 +852,51 @@ def get_ids(items, month_filter: list = None) -> List[str]:
     Get a 1D list of Image IDs grouped based on the acquired date of the items.
     These ids are ordered by acquired date.
 
-    For example, if the items are:
-    [
-        {"id": 1, "properties": {"acquired": "2023-06-27"}},
-        {"id": 2, "properties": {"acquired": "2023-06-28"}},
-        {"id": 3, "properties": {"acquired": "2023-06-27"}},
-        {"id": 4, "properties": {"acquired": "2023-06-28"}},
-    ]
-
-    The output would be [1, 3,2, 4].
-
     Args:
         items (list): A list of items.
+        month_filter (list, optional): List of months to filter by (as 'MM' strings).
 
     Returns:
         list: A list of Image IDs.
-
     """
     if not month_filter:
         month_filter = [str(i).zfill(2) for i in range(1, 13)]
-        month_filter = [str(i).zfill(2) for i in range(1, 13)]
 
-    if items == [] or items is None:
+    if not items:
         return []
-    # get a dict of each date in format 'YYYY-MM-DD' where each entry is the list of IDS that match this date
+
+    # Get a dict of each date in format 'YYYY-MM-DD' where each entry is the list of IDs that match this date
     ids_by_date = filter_ids_by_date(items, month_filter)
-    # Get the IDs assoicated with each date from the dictionary. This is a nested list ex. [[1,2],[3,4]]
-    ids = [ids_by_date.values()]
-    # flattens the nested list into a single list ex. [[1,2],[3,4]] -> [1,2,3,4]
-    ids = [j for id in ids for j in id]
-
-    # flatten the list of lists into a single list
-    ids = [item for sublist in ids for item in sublist]
-
+    # Flatten the lists of IDs, preserving date order
+    ids = [img_id for date in sorted(ids_by_date) for img_id in ids_by_date[date]]
     return ids
+
+
+def filter_lowest_cloud_cover_per_date(item_list):
+    """
+    Filters the input list of items to keep only the item with the lowest cloud cover per date.
+
+    Assumes:
+        - Each item is a dictionary with keys: "id" and "properties.cloud_cover"
+        - The date is extracted from the item["id"] using item["id"].split("_")[0]
+
+    Returns:
+        A list of item dictionaries, one per date, with the lowest cloud cover.
+    """
+    best_items_by_date = {}
+
+    for item in item_list:
+        item_id = item["id"]
+        cloud_cover = item["properties"]["cloud_cover"]
+        date = item_id.split("_")[0]
+
+        if (
+            date not in best_items_by_date
+            or cloud_cover < best_items_by_date[date]["properties"]["cloud_cover"]
+        ):
+            best_items_by_date[date] = item
+
+    return list(best_items_by_date.values())
 
 
 def get_image_id_with_lowest_cloud_cover(items):

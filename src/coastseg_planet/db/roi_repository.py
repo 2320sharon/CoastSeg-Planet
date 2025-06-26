@@ -22,7 +22,7 @@ class ROIRepository:
         self,
         roi_id,
         tile_id,
-        capture_time,
+        capture_time:str,
         geom=None,
         intersection=None,
     ):

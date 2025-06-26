@@ -5,8 +5,26 @@ from datetime import datetime
 
 
 def parse_capture_time(id_str: str) -> str:
+    """
+    Parses a tile ID string and extracts the datetime in 'YYYY-MM-DD HH:MM:SS' format.
+    Handles inputs like:
+      - '20200129_182243'
+      - '20200129_182243_0f35'
+
+    Args:
+        id_str (str): A string containing date and time parts separated by underscores.
+
+    Returns:
+        str: The formatted datetime string.
+
+    Raises:
+        ValueError: If the input format is invalid.
+    """
     try:
-        date_part, time_part, *_ = id_str.split("_")
+        parts = id_str.split("_")
+        if len(parts) < 2:
+            raise ValueError("Expected at least two parts: YYYYMMDD_HHMMSS")
+        date_part, time_part = parts[0], parts[1]
         dt = datetime.strptime(date_part + time_part, "%Y%m%d%H%M%S")
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except Exception as e:
