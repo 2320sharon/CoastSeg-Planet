@@ -51,8 +51,8 @@ class TileProcessor:
         """
         try:
             action = db_entry.get("action", "update_metadata")
-            print(f"[Processor] Processing action: {action}")
-            print(f"[Processor] db_entry: {db_entry}")
+            # print(f"[Processor] Processing action: {action}") # @debug only
+            # print(f"[Processor] db_entry: {db_entry}")  # @debug only
             if action == "update_metadata_roi":
                 logging.info(
                     "[Processor] Saving ROI %s with status: %s",
@@ -215,47 +215,6 @@ class TileProcessor:
         )
         logging.info(f"[Processor] Inserted tile file for {entry['tile_id']}")
 
-    def get_failed_or_pending_items(
-        self, items_to_download: List[Dict], order_id: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        Fetches all ROI files that are marked as DOWNLOADING, FAILED, or PENDING.
-
-        Args:
-            items_to_download (List[Dict]): (Unused, kept for API compatibility).
-            order_id (Optional[str]): Optional filter to narrow results by order.
-
-        Returns:
-            List[Dict]: Matching ROI file records.
-        """
-        # @todo finish this function to use items_to_download or remove parameter
-        return self.roi_repo.get_filepaths_by_status(
-            status=[
-                TILE_STATUSES["DOWNLOADING"],
-                TILE_STATUSES["FAILED"],
-                TILE_STATUSES["PENDING"],
-            ],
-            order_id=order_id,
-        )
-
-    def get_success_file_items(
-        self, items_to_download: List[Dict], order_id: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        Fetches all ROI files that are marked as DOWNLOADED.
-
-        Args:
-            items_to_download (List[Dict]): (Unused, kept for API compatibility).
-            order_id (Optional[str]): Optional filter to narrow results by order.
-
-        Returns:
-            List[Dict]: Matching ROI file records with successful download status.
-        """
-        # @todo finish this function to use items_to_download or remove parameter
-        return self.roi_repo.get_filepaths_by_status(
-            status=[TILE_STATUSES["DOWNLOADED"]],
-            order_id=order_id,
-        )
 
     def query_tiles_table(self, query: Dict):
         """
@@ -283,14 +242,14 @@ class TileProcessor:
                 "[Processor] Start date or end date is missing in the query. Cannot query tiles."
             )
             return []
-        return self.tile_repo.query_tiles_files_by_geometry(
+        return self.tile_repo.get_tile_files_by_spatial_overlap(
             geometry=query.get("geometry"),
             start_date=query.get("start_date"),
             end_date=query.get("end_date"),
             min_overlap=query.get("min_overlap", 0.5),
         )
 
-    def remove_existing_tile_ids(self, tile_ids: List[str]):
+    def filter_out_existing_tile_ids(self, tile_ids: List[str]):
         """
         Filters out tile IDs that already exist in the 'tiles' table.
 
@@ -300,7 +259,7 @@ class TileProcessor:
         Returns:
             List[str]: A list of tile IDs that do NOT exist in the database.
         """
-        return self.tile_repo.remove_existing_tile_ids(tile_ids)
+        return self.tile_repo.filter_out_existing_tile_ids(tile_ids)
 
     def remove_existing_roi_ids(
         self,

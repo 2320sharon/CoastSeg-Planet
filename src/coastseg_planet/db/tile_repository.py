@@ -2,6 +2,8 @@
 
 import json
 from coastseg_planet.db.base import parse_capture_time, BaseDuckDB
+from shapely import wkb
+import geopandas as gpd
 
 
 class TileRepository:
@@ -33,8 +35,138 @@ class TileRepository:
         cursor.execute(query, (tile_id, geom_param, capture_time, order_name))
         self.db.commit()
 
+    def get_tile_files_by_tile_id(self, tile_id):
+        """
+        Retrieves all tile files associated with a specific tile ID.
 
-    def query_tiles_files_by_geometry(
+        Args:
+            tile_id (str): The ID of the tile to query.
+
+        Returns:
+            list: A list of dictionaries representing the tile files.
+
+        Example:
+            [
+                {
+                    "filepath": "/path/to/tile1.tif",
+                    "tile_id": "20250303_190235_45_2511",
+                    "filename": "tile1.tif",
+                    "order_id": "order1",
+                    "status": "downloaded"
+                },
+                {
+                    "filepath": "/path/to/tile2.tif",
+                    "tile_id": "20250303_190235_45_2512",
+                    "filename": "tile2.tif",
+                    "order_id": "order1",
+                    "status": "downloaded"
+                }
+            ]
+
+        """
+        cursor = self.db.get_cursor()
+        df = cursor.execute(
+            "SELECT * FROM tile_files WHERE tile_id = ?", (tile_id,)
+        ).fetchdf()
+        return df.to_dict(orient="records") if not df.empty else []
+
+    def update_tile_file_location(
+        self,
+        old_filepath: str,
+        new_filepath: str,
+    ):
+        """
+        Updates the file path of a tile file in the database.
+        This method changes the file path of a tile file from `old_filepath` to `new_filepath`
+        and sets its status to 'downloaded' in the `tile_files` table.
+        Args:
+            old_filepath (str): The current file path of the tile file in the database.
+            new_filepath (str): The new file path to update in the database.
+        Returns:
+            None
+        """
+        self.db.get_cursor().execute(
+            "UPDATE tile_files SET filepath = ?, status = 'downloaded' WHERE filepath = ?",
+            (new_filepath, old_filepath),
+        )
+
+    def get_tile_geometries(
+        self,
+        geometry=None,
+        start_date=None,
+        end_date=None,
+        min_overlap=0.0,
+        statuses=None,
+    ):
+        """
+        Returns tile geometries as a GeoDataFrame with optional filters.
+
+        Args:
+            geometry (str, optional): GeoJSON string to filter by spatial overlap.
+            start_date (str, optional): Start of capture_time range (inclusive).
+            end_date (str, optional): End of capture_time range (inclusive).
+            min_overlap (float, optional): Minimum required spatial overlap ratio.
+            statuses (set[str], optional): Tile file statuses to filter by (e.g. {"downloaded"}).
+
+        Returns:
+            geopandas.GeoDataFrame: A GeoDataFrame of tile geometries.
+        """
+        filters = []
+        params = []
+
+        # Optional JOIN if filtering by status
+        join_clause = ""
+        if statuses:
+            placeholders = ", ".join(["?"] * len(statuses))
+            join_clause = "JOIN tile_files tf ON t.tile_id = tf.tile_id"
+            filters.append(f"tf.status IN ({placeholders})")
+            params.extend(statuses)
+
+        if start_date and end_date:
+            filters.append("t.capture_time BETWEEN ? AND ?")
+            params.extend([start_date, end_date])
+
+        if geometry:
+            filters.append(
+                "ST_Area(ST_Intersection(t.geometry, ST_GeomFromGeoJSON(?))) / ST_Area(t.geometry) >= ?"
+            )
+            params.extend([geometry, min_overlap])
+
+        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+
+        sql = f"""
+        SELECT t.tile_id, t.capture_time, ST_AsWKB(t.geometry) AS geom
+        FROM tiles t
+        {join_clause}
+        {where_clause}
+        """
+
+        cursor = self.db.get_cursor()
+        cursor.execute(sql, tuple(params))
+        rows = cursor.fetchall()
+
+        print(f"rows: {len(rows)}")
+        # Example ROW
+        # ('20250303_190235_45_2511', # tile id
+        #  datetime.datetime(2025, 3, 3, 19, 2, 35), # capture_time
+        #  b'\x01\x03\x00\x00\x00\x01\x00\x00\x00\x05\x00...\xcaEA@') # this is the WKB representation of the geometry
+
+        gdf = gpd.GeoDataFrame(
+            [
+                {
+                    "tile_id": row[0],  # tile id
+                    "capture_time": row[1],  # capture_time
+                    "geometry": wkb.loads(row[2]) if row[2] else None,  # geometry
+                }
+                for row in rows
+            ],
+            geometry="geometry",
+            crs="EPSG:4326",
+        )
+
+        return gdf
+
+    def get_tile_files_by_spatial_overlap(
         self,
         geometry,
         start_date,
@@ -61,7 +193,7 @@ class TileRepository:
 
         return tile_dict  # in format {tile_id1: [filepath1, filepath2], tile_id2: [...], ...}
 
-    def query_tiles_by_geometry(
+    def get_tile_ids_by_spatial_overlap(
         self,
         geometry,
         start_date,
@@ -131,7 +263,7 @@ class TileRepository:
             map(lambda x: x[0], tiles_list)
         )  # in format ['tile_id1', 'tile_id2', ...]
 
-    def query_matching_geometries(
+    def fetch_matching_tile_and_roi_geometries(
         self,
         geometry,
         start_date,
@@ -139,6 +271,30 @@ class TileRepository:
         min_overlap=0.9,
         statuses={"downloaded"},
     ):
+        """
+        Queries the database for geometries (tiles and ROIs) that spatially overlap with a given geometry
+        within a specified date range and with a minimum overlap threshold.
+        This method searches both ROI (region of interest) and tile records, filtering by capture time,
+        status, and spatial overlap. It returns a GeoDataFrame containing the matching geometries.
+        Args:
+            geometry (str): A GeoJSON string representing the geometry to match against.
+            start_date (str or datetime): The start of the capture time range (inclusive).
+            end_date (str or datetime): The end of the capture time range (inclusive).
+            min_overlap (float, optional): Minimum required overlap ratio (between 0 and 1) between
+                the input geometry and candidate geometries. Defaults to 0.9.
+            statuses (set or iterable of str, optional): Set of status values to filter the files
+                (e.g., {"downloaded"}). Defaults to {"downloaded"}.
+        Returns:
+            geopandas.GeoDataFrame: A GeoDataFrame with columns:
+                - tile_id: ID of the tile.
+                - roi_id: ID of the ROI (or None for tile-only matches).
+                - capture_time: The capture time of the geometry.
+                - geometry: The matched geometry as a shapely object.
+        Notes:
+            - The coordinate reference system (CRS) of the returned GeoDataFrame is set to EPSG:4326.
+            - The function assumes the database supports spatial SQL functions such as ST_Area,
+              ST_Intersection, and ST_GeomFromGeoJSON.
+        """
         placeholders = ", ".join(["?"] * len(statuses))
 
         sql = f"""
@@ -179,10 +335,6 @@ class TileRepository:
         cursor = self.db.get_cursor()
         cursor.execute(sql, params)
         rows = cursor.fetchall()
-        colnames = [desc[0] for desc in cursor.description]
-
-        from shapely import wkb
-        import geopandas as gpd
 
         # Build GeoDataFrame
         df = gpd.GeoDataFrame(
@@ -285,7 +437,7 @@ class TileRepository:
             map(lambda x: x[0], filepaths)
         )  # in format ['filepath1', 'filepath2', ...]
 
-    def remove_existing_tile_ids(self, tile_ids):
+    def filter_out_existing_tile_ids(self, tile_ids):
         """
         Filters out tile IDs that already exist in the 'tiles' table.
 

@@ -76,9 +76,9 @@ class OrderConfig:
     product_bundle: str - Product bundle to use (default is "analytic_udm2").
     item_type: str - Item type to use (default is "PSScene").
     tools: Union[Set[str], Dict[str, bool]] - Tools to apply to the order.
-    - If a set, it contains tool names like "clip", "toar".
-    - If a dict, it contains tool names as keys and boolean values indicating whether to apply the tool.
-
+        - If a set, it contains tool names like "clip", "toar".
+        - If a dict, it contains tool names as keys and boolean values indicating whether to apply the tool.
+    one_image_per_day: bool - If True, only one image will be downloaded per day. If multiple images are available for the same day, only one will be selected and downloaded. Defaults to False.
     """
 
     order_name: str
@@ -98,6 +98,7 @@ class OrderConfig:
     product_bundle: str = "analytic_udm2"
     item_type: str = "PSScene"
     tools: Union[Set[str], Dict[str, bool]] = field(default_factory=set)
+    one_image_per_day: bool = False  # New setting
 
 
 # ---------------------
@@ -114,25 +115,23 @@ class Order:
     - Validate input fields such as ROI path, date range, cloud cover, and destination
     - Ensure the ROI GeoJSON is valid and contains Polygon geometries
     - Track the lifecycle status of an order (e.g., not found, running, successful)
+    - Handles the one_image_per_day setting: If True, only one image per day will be downloaded, even if multiple are available for the same day.
 
     Attributes:
         name (str): Name of the order.
         config (OrderConfig): All order parameters needed for the API in a single dataclass.
-
         status (OrderStatus): Current state of the order lifecycle.
-
             "Available" indicates that the order is ready for download.
             "Running" indicates that the order is being created and is not yet ready.
             "NotFound" indicates that the order has not been created yet.
             "Unavailable" indicates that the order cannot be found or accessed.
-
         available (bool): Indicates if the order is available to download or not.
         tools (dict): Dictionary of tools and their settings for the order.
             - clip (bool): Whether to clip the images to the ROI.
             - toar (bool): Whether to apply TOAR (Top of Atmosphere Reflectance).
             - coregister (bool): Whether to coregister the images.
             - coregister_id (str): ID of the coregistered order.
-
+        one_image_per_day (bool): If True, only one image will be downloaded per day. If multiple images are available for the same day, only one will be selected and downloaded. Defaults to False.
 
     Methods:
         validate(): Runs all validation checks.
@@ -142,13 +141,6 @@ class Order:
         __repr__(): Displays a human-readable summary of the order.
 
     """
-
-    # default_tools = {
-    #     "clip": True,
-    #     "toar": True,
-    #     "coregister": False,
-    #     "coregister_id": "",
-    # }
 
     def __init__(self, config: OrderConfig):
         self.config = config
@@ -210,12 +202,13 @@ class Order:
             "month_filter": ["01", "02", "03", ..., "12"],
             "product_bundle": "analytic_udm2",
             "item_type": "PSScene",
-            "tools": {"clip": True, "toar": True, "coregister": False, "coregister_id": ""}
+            "tools": {"clip": True, "toar": True, "coregister": False, "coregister_id": ""},
+            "one_image_per_day": False  # If True, only one image will be downloaded per day
         }
         """
         result = self.config.__dict__.copy()
         result["tools"] = self.tools
-        return self.config.__dict__.copy()
+        return result  # Ensure all config fields, including one_image_per_day, are included
 
     @classmethod
     def from_dict(cls, config: dict):
@@ -224,6 +217,7 @@ class Order:
 
         Args:
             config (dict): A dictionary with keys matching the fields of OrderConfig.
+                Should include 'one_image_per_day' (bool) if you want to limit to one image per day. If missing, defaults to False.
 
         Returns:
             Order: A new validated Order instance based on the provided configuration.
@@ -249,6 +243,7 @@ class Order:
                     [f"{i:02}" for i in range(1, 13)],
                 ),
                 tools=config.get("tools", {}),
+                one_image_per_day=config.get("one_image_per_day", False),
             ),
         )
         order.validate()

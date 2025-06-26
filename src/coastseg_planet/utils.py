@@ -14,6 +14,37 @@ from coastseg_planet.processing import get_tiffs_with_bad_area
 from json import JSONEncoder
 
 
+def extract_tile_id_from_filename(filename: str) -> str:
+    """
+    Extracts the tile ID from a filename.
+    The tile ID starts with 'YYYYMMDD_HHMMSS' and includes additional parts,
+    stopping before any known suffix chain (e.g., _3B_AnalyticMS_metadata).
+
+    Args:
+        filename (str): The filename to extract from.
+
+    Returns:
+        str: The extracted tile ID.
+
+    Raises:
+        ValueError: If a valid tile ID cannot be extracted.
+    """
+    # Add all known suffix parts (case-insensitive)
+    suffixes = r"(?:3B|3A|udm2|metadata|analytic|sr|visual|AnalyticMS|xml)"
+
+    pattern = re.compile(
+        rf"^(\d{{8}}_\d{{6}}(?:_[a-zA-Z0-9]+)*?)"
+        rf"(?=_(?:{suffixes})(?:_|\.|$)|\.|$)",
+        re.IGNORECASE,
+    )
+
+    match = pattern.search(filename)
+    if not match:
+        raise ValueError(f"Unable to extract tile ID from filename: {filename}")
+
+    return match.group(1)
+
+
 def read_API_key_from_config(config_path: str = None, api_key_override: str = None):
     """
     Main function to read config and set up the API key.
@@ -240,7 +271,7 @@ def filter_files_by_area(
     for bad_tiff in bad_tiff_paths:
         try:
             im_name = os.path.basename(bad_tiff)
-            file_identifier = "_".join(im_name.split("_")[:4])
+            file_identifier = extract_tile_id_from_filename(im_name)
             move_files(directory, bad_path, file_identifier, move=True)
         except Exception as e:
             print(f"Error moving {bad_tiff} to {bad_path}")
@@ -359,7 +390,7 @@ def sort_images(
     for i in range(len(inference_df)):
         input_image_path = inference_df["im_paths"].iloc[i]
         im_name = os.path.basename(input_image_path)
-        file_identifier = "_".join(im_name.split("_")[:4])
+        file_identifier = extract_tile_id_from_filename(im_name)
         if inference_df["im_classes"].iloc[i] == "good":
             output_image_path = os.path.join(good_dir, im_name)
         else:

@@ -16,8 +16,26 @@ from coastseg_planet.config import TILE_STATUSES, CLOUD_COVER, MIN_AREA_PERCENT
 from coastseg_planet import download
 from coastseg_planet.orders import Order
 from coastseg_planet.db.base import BaseDuckDB
+from coastseg_planet import db_utils
 
 from coastseg_planet.processor import TileProcessor
+
+
+def get_confirmation_to_download_ids(ids) -> str:
+    # get user to confirm that the ids are correct
+    userinput = (
+        input(
+            f"ids = {ids}\n There are {len(ids)} items with the above ids available to download. Do you want to download these ids?  (y/n): "
+        )
+        .strip()
+        .lower()
+    )
+    if userinput != "y":
+        print("User did not confirm the ids. Exiting.")
+        exit()
+        raise ValueError("User did not confirm the ids. Exiting.")
+
+    print(f"Starting download of {len(ids)} items.")
 
 
 def separate_manifest_items(items: List[Dict]) -> (List[Dict], List[Dict]):
@@ -78,7 +96,7 @@ def get_all_items(order: Dict, directory: str) -> List[Dict]:
             - 'filename': The name of the file to be saved.
     """
     results = order.get("_links", {}).get("results", [])
-    return [
+    items = [
         {
             "location": result["location"],
             "directory": Path(directory) / Path(result["name"]).parent,
@@ -87,6 +105,16 @@ def get_all_items(order: Dict, directory: str) -> List[Dict]:
         for result in results
         if result
     ]
+    # log all of these to a file
+    if not items:
+        print("No items found in the order. Please check the order details.")
+    else:
+        print(f"Found {len(items)} items to download from the order.")
+        # print each filename
+        for item in items:
+            print(f" - {item['filename']}")
+
+    return items
 
 
 def filter_skipped_filenames(
@@ -104,6 +132,16 @@ def filter_skipped_filenames(
     """
     if not files_to_skip:
         return items
+    if not isinstance(files_to_skip, (list, set, tuple)):
+        print(
+            f"Unexpected type for files_to_skip: {type(files_to_skip)} - value: {files_to_skip}"
+        )
+        return items
+
+    # print the first item in items
+    print(f"Filtering out {len(files_to_skip)} files from {len(items)} items")
+    print(f"First item in items: {items[0] if items else 'No items available'}")
+
     return [item for item in items if item["filename"] not in files_to_skip]
 
 
@@ -138,33 +176,6 @@ def read_geometry_from_file(filepath: str) -> dict:
     if "metadata.json" in filename:
         return read_geometry_from_metadata(filepath)
     return {}
-
-
-def extract_unique_datetime_ids(items: Union[str, List[str]]) -> Union[str, Set[str]]:
-    """
-    Extracts unique datetime IDs in the format 'YYYYMMDD_HHMMSS_XX' from a string or list of strings.
-
-    Args:
-        items (Union[str, List[str]]): A filename string or list of filename strings.
-
-    Returns:
-        Union[str, Set[str]]: A single datetime ID string if one match is found, otherwise a set of unique IDs.
-    """
-    datetime_pattern = re.compile(r"\d{8}_\d{6}_\d{2}")
-    unique_ids = set()
-
-    # Normalize to a list for uniform handling
-    if isinstance(items, str):
-        items = [items]
-
-    for filename in items:
-        match = datetime_pattern.search(filename)
-        if match:
-            unique_ids.add(match.group())
-
-    if len(unique_ids) == 1:
-        return next(iter(unique_ids))
-    return unique_ids
 
 
 def read_roi_from_order(order: Order):
@@ -324,7 +335,7 @@ class DownloadManager:
         success_ids = await self.fetch_order_ids(order.name, ["success"], contains_name)
 
         if success_ids:
-            await self.download_existing_orders(order, success_ids)
+            await self.download_existing_order(order, success_ids)
         else:  # download a new order
             await self.create_and_download_order(order)
 
@@ -336,7 +347,7 @@ class DownloadManager:
             contains_name=contains_name,
         )
 
-    async def download_existing_orders(self, order: Order, order_ids: List[str]):
+    async def download_existing_order(self, order: Order, order_ids: List[str]):
         orders_to_download = []
 
         for order_id in order_ids:
@@ -573,14 +584,16 @@ class DownloadManager:
             None
         """
         # get the tile id from the filename example: "20241004_223419_50_24b7" from "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"
-        unique_ids = set("_".join(item["filename"].split("_")[:4]) for item in items)
+        unique_ids = set(
+            db_utils.extract_tile_id_from_filename(item["filename"]) for item in items
+        )
         unique_ids.discard("manifest.json")
         for tile_id in unique_ids:
             await self.processor.process(
                 {
                     "action": "insert_tile",
                     "tile_id": tile_id,
-                    "capture_time": extract_unique_datetime_ids(tile_id),
+                    "capture_time": db_utils.extract_unique_timestamp(tile_id),
                     "geometry": geometry,
                 }
             )
@@ -602,7 +615,7 @@ class DownloadManager:
         Args:
             item (dict): Dictionary containing information about the tile to download, including 'filename' and 'directory'.
             order_id (str): Identifier for the order associated with the tile.
-            roi_geometry (dict): The region of interest geometry used for the download.
+            roi_geometry (dict): The region of interest geometry used to request the order to download.
             progress_bar (tqdm_asyncio): Progress bar instance to update download progress.
             roi_id (str, optional): Identifier for the region of interest. Defaults to "".
         Returns:
@@ -616,7 +629,7 @@ class DownloadManager:
         await self.processor.process(
             {
                 "action": "update_metadata_tile",
-                "tile_id": "_".join(item["filename"].split("_")[:4]),
+                "tile_id": db_utils.extract_tile_id_from_filename(item["filename"]),
                 "order_id": order_id,
                 "filepath": item["directory"] / item["filename"],
                 "status": TILE_STATUSES["PENDING"],
@@ -667,7 +680,7 @@ class DownloadManager:
             {
                 "action": "update_metadata_roi",
                 "roi_id": roi_id,
-                "tile_id": "_".join(item["filename"].split("_")[:4]),
+                "tile_id": db_utils.extract_tile_id_from_filename(item["filename"]),
                 "order_id": order_id,
                 "filepath": item["directory"] / item["filename"],
                 "status": TILE_STATUSES["PENDING"],
@@ -701,7 +714,9 @@ class DownloadManager:
             items = [items]
 
         # get the tile id from the filename example: "20241004_223419_50_24b7" from "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"
-        unique_ids = set("_".join(item["filename"].split("_")[:4]) for item in items)
+        unique_ids = set(
+            db_utils.extract_tile_id_from_filename(item["filename"]) for item in items
+        )
         unique_ids.discard("manifest.json")
         for tile_id in unique_ids:
             await self.processor.process(
@@ -736,7 +751,9 @@ class DownloadManager:
             None
         """
         # get the tile id from the filename example: "20241004_223419_50_24b7" from "20241004_223419_50_24b7_3B_AnalyticMS_metadata_clip.xml"
-        unique_ids = set("_".join(item["filename"].split("_")[:4]) for item in items)
+        unique_ids = set(
+            db_utils.extract_tile_id_from_filename(item["filename"]) for item in items
+        )
         unique_ids.discard("manifest.json")
         # Basically this lets us track what larger tile each ROI was clipped from
         for tile_id in unique_ids:
@@ -745,7 +762,7 @@ class DownloadManager:
                     "action": "insert_roi",
                     "roi_id": roi_id,
                     "tile_id": tile_id,
-                    "capture_time": extract_unique_datetime_ids(tile_id),
+                    "capture_time": db_utils.extract_unique_timestamp(tile_id),
                     "geometry": roi_geometry,
                 }
             )
@@ -785,17 +802,32 @@ class DownloadManager:
                     overwrite=True,
                     progress_bar=True,
                 )
-                await self.processor.process(
-                    {
-                        "action": action,
-                        "roi_id": roi_id,
-                        "tile_id": "_".join(item["filename"].split("_")[:4]),
-                        "order_id": order_id,
-                        "filepath": item["directory"] / item["filename"],
-                        "status": TILE_STATUSES["DOWNLOADED"],
-                        "geometry": geometry,
-                    }
-                )
+                if item["filename"] == "manifest.json":
+                    await self.processor.process(
+                        {
+                            "action": action,
+                            "roi_id": roi_id,
+                            "tile_id": "",
+                            "order_id": order_id,
+                            "filepath": item["directory"] / item["filename"],
+                            "status": TILE_STATUSES["DOWNLOADED"],
+                            "geometry": geometry,
+                        }
+                    )
+                else:
+                    await self.processor.process(
+                        {
+                            "action": action,
+                            "roi_id": roi_id,
+                            "tile_id": db_utils.extract_tile_id_from_filename(
+                                item["filename"]
+                            ),
+                            "order_id": order_id,
+                            "filepath": item["directory"] / item["filename"],
+                            "status": TILE_STATUSES["DOWNLOADED"],
+                            "geometry": geometry,
+                        }
+                    )
                 progress_bar.update(1)
                 return
             except asyncio.CancelledError as e:
@@ -809,7 +841,7 @@ class DownloadManager:
                 "action": action,
                 "roi_id": roi_id,
                 "order_id": order_id,
-                "tile_id": "_".join(item["filename"].split("_")[:4]),
+                "tile_id": db_utils.extract_tile_id_from_filename(item["filename"]),
                 "filepath": item["directory"] / item["filename"],
                 "status": TILE_STATUSES["FAILED"],
                 "geometry": geometry,
@@ -828,7 +860,7 @@ class DownloadManager:
         roi_gdf,
         months_filter,
         tools,
-        MIN_OVERLAP=0.5,
+        one_image_per_day=False,
     ):
         """
         Filters satellite image items based on area coverage, date range, cloud cover, and existing database entries.
@@ -842,6 +874,7 @@ class DownloadManager:
             roi_gdf (GeoDataFrame): GeoDataFrame representing the ROI geometry for spatial filtering.
             months_filter (list or set): List or set of months to filter items by acquisition date.
             tools (dict): Dictionary of tool flags (e.g., {"clip": True/False}) to control filtering behavior.
+            one_image_per_day (bool): If True, ensures only one image per day is kept in the final list.
         Returns:
             tuple: A tuple containing:
                 - ids (list): List of filtered item IDs to download.
@@ -854,29 +887,32 @@ class DownloadManager:
         )
 
         # filter the items list by area. If the area of the image is less than than percentage of area of the roi provided, then the image is not included in the list
-        print(f"Number of items to download before filtering by area: {len(item_list)}")
+        print(
+            f"Number of items to download before removes scenes that had less than {min_area_percentage * 100}% ROI coverage: {len(item_list)}"
+        )
         item_list = download.filter_items_by_area(
-            roi_gdf, item_list, min_area_percentage
+            roi_gdf, item_list, min_roi_coverage=min_area_percentage
         )
         print(f"Number of items to download after filtering by area: {len(item_list)}")
+        # if only one image per day is requested, filter the items list so that only one image per day is kept
+        if one_image_per_day:
+            print(f"Only one image per day is requested. Filtering items list.")
+            # filter the items list so that only one image per day is kept (one with lowest cloud cover)
+            item_list = download.filter_lowest_cloud_cover_per_date(item_list)
 
         ids = download.get_ids(item_list, months_filter)
-        print(
-            f"All IDs available from Planet Data API before filtering: {ids}"
-        )  # @todo remove this
 
         # if the clip tool is not being used filter the ids to download by making sure they don't already exist in the tiles table
         if not tools.get("clip", False):
             print(f"requested ids: {ids}")
             # this is the ids that are NOT in the database
-            ids = self.processor.remove_existing_tile_ids(ids)
+            ids = self.processor.filter_out_existing_tile_ids(ids)
 
             # filter items list so that it only contains these ids
             item_list = [item for item in item_list if item["id"] in ids]
             print(
                 f"Number of items to download after filtering by existing tile ids: {len(item_list)}"
             )
-            print(f"ids after filtering: {ids}")
             if not ids:
                 print(
                     f"No items to download after filtering by existing tile ids. Exiting."
@@ -891,7 +927,7 @@ class DownloadManager:
                 roi_dict=roi_dict,
                 start_date=start_date,
                 end_date=end_date,
-                min_overlap=MIN_OVERLAP,
+                min_overlap=min_area_percentage,
             )
             # filter items list so that it only contains these ids
             item_list = [item for item in item_list if item["id"] in ids]
@@ -906,6 +942,8 @@ class DownloadManager:
                 raise ValueError(
                     "No items to download after filtering by existing tile ids. Exiting."
                 )
+
+        get_confirmation_to_download_ids(ids)
 
         return ids, item_list
 
@@ -935,7 +973,10 @@ class DownloadManager:
         # if the ROI ID is the same but the geometry is different warn the user and STOP the order creation
         if roi_id == "":
             raise ValueError(f"ROI ID not found in order dictionary: {order_dict}")
-        # @todo: If the ROI ID is found in the database, we should check if the ROI ID is valid and if it exists in the database.
+        # @todo: If the ROI ID is found in the database, we should check if the geometry is the same as the one in the database
+        # If the ROI ID does not exist in the database, we should create it
+        # If the ROI's geometry is different, we should warn the user and stop the order creation
+
         # If it does exist add the order name to the ROI_ID then store it in the database
         # self.db.validate_roi_id(roi_id)
         # convert the ROI to a dictionary so it can be used with the Planet API
@@ -959,6 +1000,7 @@ class DownloadManager:
             roi_gdf,
             months_filter,
             tools,
+            one_image_per_day=order_dict.get("one_image_per_day", False),
         )
 
         coregister_tool = tools.get("coregister", False)
@@ -1037,7 +1079,6 @@ class DownloadManager:
                         not clip_tool
                     )  # if the clip tool is not used then we are in tile mode
 
-                    # print(f"planet order: {existing_order}") @debug only
                     # Immediately launch download
                     download_tasks.append(
                         asyncio.create_task(
@@ -1046,7 +1087,7 @@ class DownloadManager:
                                 download_path,
                                 roi_id,
                                 roi_dict,
-                                tile_mode,
+                                tile_mode=tile_mode,
                             )
                         )
                     )

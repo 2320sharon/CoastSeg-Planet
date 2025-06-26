@@ -14,6 +14,38 @@ from coastseg_planet.db.order_repository import OrderRepository
 from coastseg_planet.processor import TileProcessor
 from coastseg_planet.config import DATABASE_PATH, TILE_STATUSES
 
+
+def extract_tile_id_from_filename(filename: str) -> str:
+    """
+    Extracts the tile ID from a filename.
+    The tile ID starts with 'YYYYMMDD_HHMMSS' and includes additional parts,
+    stopping before any known suffix chain (e.g., _3B_AnalyticMS_metadata).
+
+    Args:
+        filename (str): The filename to extract from.
+
+    Returns:
+        str: The extracted tile ID.
+
+    Raises:
+        ValueError: If a valid tile ID cannot be extracted.
+    """
+    # Add all known suffix parts (case-insensitive)
+    suffixes = r"(?:3B|3A|udm2|metadata|analytic|sr|visual|AnalyticMS|xml)"
+
+    pattern = re.compile(
+        rf"^(\d{{8}}_\d{{6}}(?:_[a-zA-Z0-9]+)*?)"
+        rf"(?=_(?:{suffixes})(?:_|\.|$)|\.|$)",
+        re.IGNORECASE,
+    )
+
+    match = pattern.search(filename)
+    if not match:
+        raise ValueError(f"Unable to extract tile ID from filename: {filename}")
+
+    return match.group(1)
+
+
 # Define extractor functions
 extractors = {
     "json": lambda path: read_json(path).get("geometry", {}),
@@ -282,6 +314,19 @@ def extract_geometry(
 
 
 def extract_geometry_from_geojson(geojson_path):
+    """
+    Extracts the geometry object from the first feature in a GeoJSON file.
+
+    Args:
+        geojson_path (str): The file path to the GeoJSON file.
+
+    Returns:
+        dict: The geometry dictionary from the first feature in the GeoJSON file.
+
+    Raises:
+        FileNotFoundError: If the specified GeoJSON file does not exist.
+        ValueError: If the GeoJSON file contains no features.
+    """
     if not os.path.exists(geojson_path):
         raise FileNotFoundError(f"GeoJSON file not found: {geojson_path}")
     geojson = read_json(geojson_path)
@@ -291,20 +336,26 @@ def extract_geometry_from_geojson(geojson_path):
     return features[0].get("geometry", {})
 
 
-def extract_unique_datetime_ids(items: Union[str, List[str]]) -> Union[str, Set[str]]:
+def extract_unique_timestamp(items: Union[str, List[str]]) -> Union[str, Set[str]]:
     """
-    Extracts unique datetime IDs in the format 'YYYYMMDD_HHMMSS_XX' from a string or list of strings.
+    Extracts unique timestamp strings in the format 'YYYYMMDD_HHMMSS' from a filename or list of filenames.
+
+    This function searches for the first two underscore-separated segments in each filename that match:
+    - 8-digit date (YYYYMMDD)
+    - 6-digit time (HHMMSS)
+
+    Any parts after the timestamp are ignored.
 
     Args:
-        items (Union[str, List[str]]): A filename string or list of filename strings.
+        items (Union[str, List[str]]): A filename string or a list of filename strings.
 
     Returns:
-        Union[str, Set[str]]: A single datetime ID string if one match is found, otherwise a set of unique IDs.
+        Union[str, Set[str]]: A single datetime string if one match is found, otherwise a set of unique datetime strings.
     """
-    datetime_pattern = re.compile(r"\d{8}_\d{6}_\d{2}")
+    datetime_pattern = re.compile(r"\d{8}_\d{6}")
     unique_ids = set()
 
-    # Normalize to a list for uniform handling
+    # Normalize to list
     if isinstance(items, str):
         items = [items]
 
@@ -313,12 +364,30 @@ def extract_unique_datetime_ids(items: Union[str, List[str]]) -> Union[str, Set[
         if match:
             unique_ids.add(match.group())
 
-    if len(unique_ids) == 1:
-        return next(iter(unique_ids))
-    return unique_ids
+    if not unique_ids:
+        raise ValueError("No valid datetime values found in the provided items.")
+
+    return next(iter(unique_ids)) if len(unique_ids) == 1 else unique_ids
 
 
 async def process_tile_mode(processor, id_dict, extractors, order_name=None):
+    """
+    Asynchronously processes and inserts tile data and associated files into the database in "tile mode".
+    This function performs the following steps:
+    1. Iterates over each tile in the provided `id_dict`, extracts geometry using the given extractors,
+        and inserts the tile metadata into the database via the `processor`.
+    2. After all tiles are inserted, iterates again to associate and update metadata for each file
+        related to the tiles, ensuring foreign key constraints are respected.
+    Args:
+         processor: An asynchronous processor object with a `process` coroutine method for database operations.
+         id_dict (dict): A dictionary mapping tile IDs to their details, including metadata and file paths.
+         extractors (list): A list of extractor functions or objects used to extract geometry from metadata or files.
+         order_name (str, optional): An optional order name to associate with each tile.
+    Notes:
+         - Geometry extraction is attempted for each tile; tiles with failed geometry extraction are skipped.
+         - Associated files are linked to tiles after all tile records are inserted to satisfy FK constraints.
+         - Prints progress and status messages to the console.
+    """
     # Insert each tile and its geometry
     for tile_id, details in id_dict.items():
         print(f"Processing tile {tile_id}...")
@@ -335,7 +404,7 @@ async def process_tile_mode(processor, id_dict, extractors, order_name=None):
             {
                 "action": "insert_tile",
                 "tile_id": tile_id,
-                "capture_time": extract_unique_datetime_ids(tile_id),
+                "capture_time": extract_unique_timestamp(tile_id),
                 "geometry": geometry,
                 "order_name": order_name,
             }
@@ -477,7 +546,7 @@ async def process_roi_mode(
                 "action": "insert_roi",
                 "roi_id": roi_name,
                 "tile_id": tile_id,
-                "capture_time": extract_unique_datetime_ids(tile_id),
+                "capture_time": extract_unique_timestamp(tile_id),
                 "intersection": mapping(intersection_region),
                 "geometry": shared_geometry,
             }
@@ -490,18 +559,13 @@ async def process_roi_mode(
                 {
                     "action": "update_metadata_roi",
                     "roi_id": roi_name,
-                    "tile_id": "_".join(filename.split("_")[:4]),
+                    "tile_id": extract_tile_id_from_filename(filename),
                     "order_id": "",
                     "filepath": filepath,
                     "status": TILE_STATUSES["DOWNLOADED"],
                 }
             )
 
-        # @todo update code to copy what tiles does and update the intersection for the ROI after the metadata file has been read
-        # Recall that intersection is the ROI's intersection with the tile geom
-        # tile_geom = get_geom(id_dict[tile_id])
-        # Clip ROI to tile
-        # set this as the new geom
     print(f"✅ Inserted ROI '{roi_name}' with shared geometry and associated files.")
 
 
@@ -602,9 +666,6 @@ async def process_directory(
 ):
 
     id_dict = existing_files_dictionary(directory)
-
-    with open("id_mapping.json", "w") as json_file:
-        json.dump(id_dict, json_file, indent=4)
 
     if mode == "roi":
         if not roi_name:
